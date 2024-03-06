@@ -16,17 +16,23 @@ class DocumentProcessor:
         self.client = OpenAI(api_key=OPENAI_API_KEY)
         self.model = GPT_MODEL_NAME
         self.prompt_template = """
-        Given the document provided in its original language, please provide a concise summary divided into a few distinct parts. Each part should adhere to the following constraints:
+        Given the document provided in its original language, please provide a concise summary divided into a few distinct parts, formatted as a JSON list. Each part should adhere to the following constraints:
         - The content of each part should be rich in information and aim to be around 500 characters, but flexibility is allowed to ensure no critical information is lost. The goal is to minimize the number of parts while maximizing the information content of each.
         - Each part should capture a distinct aspect or section of the document, ensuring no information is lost from the original document.
         - Summaries should collectively cover the entire content of the document without overlapping information.
 
-        Present the summaries in a list format, where each summary part is represented as an object in an array with a 'content' key. Do not add any Markdown or special formatting characters like backticks or JSON notation. Avoid changing the original language of the document.
+        Please format the summaries as a JSON list of objects, where each summary part is an object with a "content" key containing the text summary. Do not add any Markdown or special formatting characters like backticks or JSON notation. Avoid changing the original language of the document.
+        Example of expected output format:
+        [
+            {"content": "Summary part 1."},
+            {"content": "Summary part 2."},
+            {"content": "Summary part 3."}
+        ]
 
         Document:
         {formatted_documents}
 
-        Please provide the summaries as a simple list of objects, each containing a 'content' key with the text summary, and should retain the original language of the document.
+        Based on the document above, please provide the summaries in the specified JSON list format, each containing a 'content' key with the text summary, and should retain the original language of the document.
         """
 
     def fetch_batch(self, offset, limit):
@@ -50,13 +56,24 @@ class DocumentProcessor:
 
     def process_document_with_gpt(self, document_content):
         prompt = self.custom_format(self.prompt_template, formatted_documents=document_content)
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "system", "content": prompt}],
-            temperature=0
-        )
-        ret = response.choices[0].message.content
-        return json.loads(ret)
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "system", "content": prompt}],
+                temperature=0
+            )
+            ret = response.choices[0].message.content
+            if ret:
+                return json.loads(ret)
+            else:
+                print("Received an empty response or invalid JSON")
+                return None
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            return None
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return None
 
     def store_processed_data(self, raw_id, url, processed_data):
         conn = sqlite3.connect(self.sqlite_db_path)
@@ -79,17 +96,10 @@ class DocumentProcessor:
             for future in concurrent.futures.as_completed(future_to_doc):
                 doc = future_to_doc[future]
                 try:
-                    processed_data = future.result()
-                    print("\n===============================begin==================================")
                     print(f"raw_id={doc['raw_id']}, url={doc['url']}")
-                    print("\n------------------------------")
-                    print(f"content={doc['content']}")
-                    print("------------------------------\n")
-                    print("\n************************************************")
-                    print(f"processed_data={processed_data}")
-                    print("************************************************")
-                    print("===============================end====================================\n")
-                    self.store_processed_data(doc['raw_id'], doc['url'], processed_data)
+                    processed_data = future.result()
+                    if processed_data:
+                        self.store_processed_data(doc['raw_id'], doc['url'], processed_data)
                 except Exception as exc:
                     print(f"Document {doc['raw_id']} generated an exception: {exc}")
 
@@ -122,4 +132,3 @@ if __name__ == "__main__":
 
     time_cost = end - begin
     print(f"\ntime_cost={time_cost}")
-

@@ -53,9 +53,9 @@ class DocumentEmbedder:
             # Add all documents to Chroma in a single batch
             self.chroma.add_documents(documents_to_add)
             print(f"Added {len(documents_to_add)} documents to Chroma.")
-            print("\n==================================begin=======================")
-            print(documents_to_add)
-            print("==================================end=========================\n")
+            #print("\n==================================begin=======================")
+            #print(documents_to_add)
+            #print("==================================end=========================\n")
 
     def run(self, batch_size=BATCH_SIZE):
         # Main method to process and store embeddings
@@ -79,4 +79,3 @@ if __name__ == "__main__":
 
     time_cost = end - begin
     print(f"\ntime_cost={time_cost}")
-
