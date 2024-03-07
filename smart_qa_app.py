@@ -44,7 +44,7 @@ chroma = Chroma(persist_directory=CHROMA_DB_DIR,
 def search_and_answer(query, k=RECALL_TOP_K):
     # Perform similarity search
     results = chroma.similarity_search_with_relevance_scores(query, k=k)
-    logger.info(f"The top {k} result is ${results}")
+    logger.info(f"for the query:'{query}' , the top {k} result is ${results}")
 
     # Build the prompt for GPT
     context = "\n\n".join([f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
