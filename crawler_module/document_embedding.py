@@ -74,7 +74,7 @@ if __name__ == "__main__":
 
     begin = int(time.time())
     embedder = DocumentEmbedder(sqlite_db_path, chroma_db_dir)
-    embedder.run(batch_size=10)  # Adjust the batch_size as per your requirement
+    embedder.run(batch_size=5)  # Adjust the batch_size as per your requirement
     end = int(time.time())
 
     time_cost = end - begin

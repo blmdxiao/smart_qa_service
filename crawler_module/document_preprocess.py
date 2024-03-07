@@ -127,7 +127,7 @@ if __name__ == "__main__":
 
     begin = int(time.time())
     processor = DocumentProcessor(sqlite_db_path)
-    processor.run(batch_size=10)  # Adjust the batch_size as per your requirement
+    processor.run(batch_size=5)  # Adjust the batch_size as per your requirement
     end = int(time.time())
 
     time_cost = end - begin
