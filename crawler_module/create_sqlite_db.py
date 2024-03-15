@@ -25,18 +25,6 @@ CREATE TABLE IF NOT EXISTS t_raw_tab (
 )
 ''')
 
-# Execute SQL statement to create t_preprocess_tab table
-c.execute('''
-CREATE TABLE IF NOT EXISTS t_preprocess_tab (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    raw_id INTEGER,
-    url TEXT NOT NULL,
-    json_data TEXT NOT NULL,
-    data_length INTEGER,
-    process_time INTEGER
-)
-''')
-
 # Commit the changes and close the connection
 conn.commit()
 conn.close()

@@ -1,12 +1,13 @@
 # coding=utf-8
 import aiohttp
 import asyncio
+import json
 import os
 import sqlite3
 import time
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-from config import SQLITE_DB_DIR, SQLITE_DB_NAME, MAX_CRAWLER_REQUESTS, DOWNLOAD_HTML_DIR
+from config import SQLITE_DB_DIR, SQLITE_DB_NAME, MAX_CRAWLER_REQUESTS, DOWNLOAD_HTML_DIR, MAX_EMBEDDING_INPUT
 
 
 class AsyncCrawler:
@@ -50,7 +51,8 @@ class AsyncCrawler:
         conn.close()
 
     async def parse_links(self, session, html, url):
-        text, links = await self.parse_content(html, url)
+        #text, links = await self.parse_content(html, url)
+        text, links = await self.parse_content_v2(html, url)
         await self.save_content_to_db_and_disk(url, text)
         for full_link in links:
             normalized_link = self.normalize_url(full_link)
@@ -97,6 +99,67 @@ class AsyncCrawler:
             print(f"Error processing content from {base_url}: {str(e)}")
             return "", set()
 
+    async def parse_content_v2(self, html, base_url):
+        chunk_text_vec = []
+        max_token_len = MAX_EMBEDDING_INPUT
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+
+            # Extract links within the body
+            links = {urljoin(base_url, a['href']) for a in soup.find_all('a', href=True)} if soup.body else set()
+
+            # Extract title text
+            title_text = soup.title.string.strip() if soup.title else ""
+            curr_chunk = title_text + '\n'
+            curr_len = len(title_text)
+
+            # Remove <script> and <style> elements before extracting text
+            for script_or_style in soup(['script', 'style', 'head', 'meta', 'link']):
+                script_or_style.decompose()
+
+            last_element_text = ''
+            if soup.body:
+                for element in soup.body.descendants:
+                    element_text = ''
+                    if element.name == 'a' and element.get('href'):
+                        href = element['href']
+                        # Check if href is an external link
+                        if href.startswith('http://') or href.startswith('https://'):
+                            text = element.get_text(strip=True)
+                            # Embed the link directly in the text
+                            element_text = f"{text}[{href}]"
+                        else:
+                            # For relative URLs, just include the text
+                            element_text = element.get_text(strip=True)
+                    elif element.string and not element.name:
+                        # Append non-link text
+                        element_text = element.string.strip()
+
+                    if element_text:
+                        element_len = len(element_text)
+                        if element_len > max_token_len:
+                            print(f"warning element_len={element_len}")
+
+                        if curr_len + element_len <= max_token_len:
+                            curr_chunk += element_text
+                            curr_chunk += '\n'
+                            curr_len += element_len + 1
+                        else:
+                            chunk_text_vec.append(curr_chunk)
+                            curr_chunk = last_element_text + '\n' + element_text + '\n'
+                            curr_len = len(curr_chunk)
+                        last_element_text = element_text
+
+                if curr_chunk:
+                    chunk_text_vec.append(curr_chunk)
+
+            full_text = json.dumps(chunk_text_vec)
+
+            return full_text, links
+        except Exception as e:
+            print(f"Error processing content from {base_url}: {str(e)}")
+            return "", set()
+
     async def crawl(self, session, url):
         self.count += 1
         print(f"Count: {self.count}")
@@ -112,13 +175,17 @@ class AsyncCrawler:
 
 
 if __name__ == "__main__":
-    base_url = "https://www.openim.io/en"
+    #base_url = "https://www.openim.io/en"
+    #base_url = "https://docs.openim.io/"
 
-    begin = int(time.time())
-    crawler = AsyncCrawler(base_url)
-    asyncio.run(crawler.run())
-    end = int(time.time())
+    url_vec = ["https://www.openim.io/en", "https://docs.openim.io/"]
+    for base_url in url_vec:
+        print(f"base_url={base_url}")
+        begin = int(time.time())
+        crawler = AsyncCrawler(base_url)
+        asyncio.run(crawler.run())
+        end = int(time.time())
 
-    time_cost = end - begin
-    print(f"\ntime_cost={time_cost}")
+        time_cost = end - begin
+        print(f"\ntime_cost={time_cost}")
 

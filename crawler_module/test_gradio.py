@@ -31,17 +31,23 @@ def search_and_answer(query, k=3):
     # Build the prompt for GPT
     context = "\n\n".join([f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
     prompt = f"""
-    Based on the following documents, please provide an answer to the query in JSON format, including 'answer' and 'source' fields. 'answer' should be a string containing the response to the query. 'source' should be a list of URLs from the documents that most directly provide the answer. If the documents do not provide enough information to answer, the 'answer' field should state that the answer is unknown. Be sure to respond in the same language as the query.
+    Given the information from the documents listed below, please formulate a detailed and specific answer to the query in the same language as the query. Your response should be in JSON format, containing 'answer' and 'source' fields. The 'answer' field must include a precise and informative response based on the document contents, matching the language of the query. The 'source' field should list the URLs of the documents that directly support your answer. If the documents do not provide sufficient information for a definitive answer, please indicate that the answer is unknown in the 'answer' field.
 
     Documents:
     {context}
 
     Query: '{query}'
 
+    Instructions for response:
+    - Ensure your answer is in the same language as the query.
+    - Provide a detailed and specific answer based on the information found in the documents.
+    - Avoid speculative or general responses not supported by the document contents.
+    - Respond in a manner that aligns with the query's language (e.g., if the query is in Chinese, respond in Chinese; if in English, respond in English; and so on for other languages).
+
     Please format your response as follows:
     {{
-      "answer": "Your answer here.",
-      "source": ["URL of the document that provides the answer"]
+      "answer": "Provide a detailed and specific answer here, in the same language as the query.",
+      "source": ["URL(s) of the document(s) supporting your answer"]
     }}
     """
 

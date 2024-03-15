@@ -29,33 +29,39 @@ class DocumentEmbedder:
         # Fetch data from SQLite in batches
         conn = sqlite3.connect(self.sqlite_db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT raw_id, url, json_data FROM t_preprocess_tab LIMIT ? OFFSET ?", (limit, offset))
+        cursor.execute("SELECT id, url, content FROM t_raw_tab LIMIT ? OFFSET ?", (limit, offset))
         data = cursor.fetchall()
         conn.close()
         return data
 
     def compute_and_store_embeddings(self, data):
-        # Initialize a list to hold all documents for batch insertion
-        documents_to_add = []
+        """
+        Compute embeddings for the provided data and store them in Chroma.
+        
+        If the content extracted from the database is too long for the OpenAI model's
+        input limitations, it is split into smaller parts. Each part is then processed
+        separately to compute its embeddings.
+        """
+        documents_to_add = []  # Initialize a list to hold all document parts for batch processing.
         for row in data:
-            raw_id, url, json_data = row
-            contents = json.loads(json_data)['summary']
-            for content in contents:
-                # Construct the metadata for each document
-                metadata = {"source": url, "id": raw_id}
-                # Create a Document object with page_content and metadata
-                doc = Document(page_content=content['content'], metadata=metadata)
-                # Add the document metadata to the list
+            doc_id, url, content = row
+            text_vec = json.loads(content)
+            part_index = 0
+            for part_content in text_vec:
+                # Process each part of the content.
+                # Construct metadata for each document part, ensuring each part has a unique ID.
+                metadata = {"source": url, "id": f"{doc_id}-part{part_index}"}
+                # Create a Document object with the part content and metadata.
+                doc = Document(page_content=part_content, metadata=metadata)
+                # Add the document part to the list for batch addition.
                 documents_to_add.append(doc)
+                part_index += 1
 
-        # Check if there are any documents to add
+        # Check if there are document parts to add.
         if documents_to_add:
-            # Add all documents to Chroma in a single batch
+            # Add all document parts to Chroma in a single batch operation.
             self.chroma.add_documents(documents_to_add)
-            print(f"Added {len(documents_to_add)} documents to Chroma.")
-            #print("\n==================================begin=======================")
-            #print(documents_to_add)
-            #print("==================================end=========================\n")
+            print(f"Added {len(documents_to_add)} document parts to Chroma.")
 
     def run(self, batch_size=BATCH_SIZE):
         # Main method to process and store embeddings
