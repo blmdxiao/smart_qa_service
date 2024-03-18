@@ -37,13 +37,12 @@ class DocumentEmbedder:
     def compute_and_store_embeddings(self, data):
         """
         Compute embeddings for the provided data and store them in Chroma.
-        
-        If the content extracted from the database is too long for the OpenAI model's
-        input limitations, it is split into smaller parts. Each part is then processed
-        separately to compute its embeddings.
         """
-        documents_to_add = []  # Initialize a list to hold all document parts for batch processing.
+        records_to_add = []
+        records_to_update = []
         for row in data:
+            documents_to_add = []  # Initialize a list to hold all document parts for batch processing.
+            timestamp = int(time.time())
             doc_id, url, content = row
             text_vec = json.loads(content)
             part_index = 0
@@ -54,14 +53,42 @@ class DocumentEmbedder:
                 # Create a Document object with the part content and metadata.
                 doc = Document(page_content=part_content, metadata=metadata)
                 # Add the document part to the list for batch addition.
-                documents_to_add.append(doc)
+                ret = documents_to_add.append(doc)
+                if ret:
+                    records_to_add.append((doc_id, json.dumps(ret), timestamp, timestamp))
                 part_index += 1
 
-        # Check if there are document parts to add.
-        if documents_to_add:
-            # Add all document parts to Chroma in a single batch operation.
-            self.chroma.add_documents(documents_to_add)
-            print(f"Added {len(documents_to_add)} document parts to Chroma.")
+            # Check if there are document parts to add.
+            if documents_to_add:
+                # Add all document parts to Chroma in a single batch operation.
+                ret = self.chroma.add_documents(documents_to_add)
+                print(f"doc_id={doc_id}, url={url} added {len(documents_to_add)} document parts to Chroma., ret={ret}")
+
+                #`doc_status` meanings:
+                #  1 - 'Web page recorded',
+                #  2 - 'Web page crawling',
+                #  3 - 'Web page crawled',
+                #  4 - 'Web text Embedding stored in Chroma'
+                records_to_update.append((4, timestamp, doc_id))
+
+        conn = sqlite3.connect(self.sqlite_db_path)
+        cursor = conn.cursor()
+
+        # insert records into t_doc_embedding_map_tab
+        if records_to_add:
+            cursor.executemany('''
+            INSERT INTO t_doc_embedding_map_tab (doc_id, embedding_id_list, ctime, mtime)
+            VALUES (?, ?, ?, ?)
+            ''', records_to_add)
+
+        # update doc_status in t_raw_tab
+        if records_to_update:
+            cursor.executemany('''
+            UPDATE t_raw_tab SET doc_status = ?, mtime = ? WHERE id = ?
+            ''', records_to_update)
+
+        conn.commit()
+        conn.close()
 
     def run(self, batch_size=BATCH_SIZE):
         # Main method to process and store embeddings
@@ -80,8 +107,9 @@ if __name__ == "__main__":
 
     begin = int(time.time())
     embedder = DocumentEmbedder(sqlite_db_path, chroma_db_dir)
-    embedder.run(batch_size=5)  # Adjust the batch_size as per your requirement
+    embedder.run(batch_size=1)  # Adjust the batch_size as per your requirement
     end = int(time.time())
 
     time_cost = end - begin
     print(f"\ntime_cost={time_cost}")
+

@@ -21,7 +21,7 @@ class AsyncCrawler:
         self.download_html_dir = download_html_dir
         if not os.path.exists(download_html_dir):
             os.makedirs(download_html_dir)
-    
+
     async def fetch_page(self, session, url):
         async with self.semaphore:
             try:
@@ -45,8 +45,15 @@ class AsyncCrawler:
             fd.write(content)
         conn = sqlite3.connect(self.sqlite_db_path)
         cursor = conn.cursor()
-        cursor.execute('INSERT INTO t_raw_tab (url, content, content_type, content_length, crawl_time) VALUES (?, ?, ?, ?, ?)',
-                  (url, content, 'text/html', len(content), int(time.time())))
+        timestamp = int(time.time())
+        #`doc_status` meanings:
+        #  1 - 'Web page recorded'
+        #  2 - 'Web page crawling'
+        #  3 - 'Web page crawled'
+        #  4 - 'Web text Embedding stored in Chroma'
+        doc_status = 3
+        cursor.execute('INSERT INTO t_raw_tab (url, content, content_length, doc_status, ctime, mtime) VALUES (?, ?, ?, ?, ?, ?)',
+                  (url, content, len(content), doc_status, timestamp, timestamp))
         conn.commit()
         conn.close()
 
@@ -63,13 +70,13 @@ class AsyncCrawler:
     async def parse_content(self, html, base_url):
         try:
             soup = BeautifulSoup(html, 'html.parser')
-            
+
             # Extract title text
             title_text = soup.title.string.strip() if soup.title else ""
-            
+
             # Extract body text
             body_text = soup.body.get_text(separator=' ', strip=True) if soup.body else ""
-            
+
             # Extract multimedia descriptions
             multimedia_descs = []
 
@@ -85,15 +92,15 @@ class AsyncCrawler:
             for obj in soup.find_all(['object', 'embed', 'iframe']):
                 if obj.get('title'):
                     multimedia_descs.append(obj['title'].strip())
-            
+
             multimedia_descs_str = " ".join(multimedia_descs)
-            
+
             # Combine title text, body text, and multimedia descriptions
             full_text = " ".join(filter(None, [title_text, body_text, multimedia_descs_str]))
-            
+
             # Extract links within the body
             links = {urljoin(base_url, a['href']) for a in soup.find_all('a', href=True)} if soup.body else set()
-            
+
             return full_text, links
         except Exception as e:
             print(f"Error processing content from {base_url}: {str(e)}")
@@ -178,7 +185,8 @@ if __name__ == "__main__":
     #base_url = "https://www.openim.io/en"
     #base_url = "https://docs.openim.io/"
 
-    url_vec = ["https://www.openim.io/en", "https://docs.openim.io/"]
+    #url_vec = ["https://www.openim.io/en", "https://docs.openim.io/"]
+    url_vec = ["https://www.openim.io/en"]
     for base_url in url_vec:
         print(f"base_url={base_url}")
         begin = int(time.time())
@@ -188,4 +196,3 @@ if __name__ == "__main__":
 
         time_cost = end - begin
         print(f"\ntime_cost={time_cost}")
-
