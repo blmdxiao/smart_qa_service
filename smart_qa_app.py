@@ -85,6 +85,16 @@ def search_and_answer(query, k=RECALL_TOP_K):
       "answer": "Provide a detailed and specific answer here, in the same language as the query, including any requested URLs, steps, example code, or other specifics.",
       "source": ["URL(s) of the document(s) supporting your answer"]
     }}
+
+    Please format `answer` as follows:
+    The `answer` must be fully formatted using Markdown syntax to ensure proper rendering on web interfaces. This includes:
+    - **Bold** (`**bold**`) and *italic* (`*italic*`) text for emphasis.
+    - Unordered lists (`- item`) for itemization and ordered lists (`1. item`) for sequencing.
+    - `Inline code` (`` `Inline code` ``) for brief code snippets and (` ``` `) for longer examples, specifying the programming language for syntax highlighting when possible.
+    - [Hyperlinks](URL) (`[Hyperlinks](URL)`) to reference external sources.
+    - Headings (`# Heading 1`, `## Heading 2`, ...) to structure the answer effectively.
+
+    Ensure each Markdown element is used appropriately for its intended purpose. Avoid common formatting errors such as inconsistent use of list symbols, improper nesting of Markdown elements, or broken link syntax.
     """
 
     # Call GPT model to generate an answer
