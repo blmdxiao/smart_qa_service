@@ -11,3 +11,4 @@ tiktoken==0.6.0
 gradio==4.19.2
 python-dotenv==1.0.1
 redis==5.0.3
+PyJWT

@@ -10,6 +10,7 @@ from openai import OpenAI
 from loguru import logger
 from util.redis_config import redis_client
 
+from admin.token_helper import TokenHelper
 
 # Configure loguru logger
 logger.add("error.log", rotation="10 MB")
@@ -173,6 +174,28 @@ def smart_qa():
         return jsonify(result)
     except Exception as e:
         logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed, the exception is {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
+
+
+@app.route('/get_token', methods=['POST'])
+def get_token():
+    data = request.json
+    user_id = data.get('user_id', '')
+    if not user_id:
+        return jsonify({'retcode': -1, 'message': 'user_id is required', 'data': {}}), 400
+
+
+    try:
+        token = TokenHelper().generate_token(user_id)
+        logger.success(f"user_id:'{user_id}' get token successfully, the token is {token}")
+        result = {
+            'retcode': 0,
+            'messge': 'success',
+            'data': {'token': token}
+        }
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"query:'{user_id}' get token failed, the exception is {e}")
         return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
 
 
