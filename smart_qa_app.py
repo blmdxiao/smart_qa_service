@@ -181,7 +181,7 @@ def smart_qa():
 
         result = {
             'retcode': 0,
-            'messge': 'success',
+            'message': 'success',
             'data': answer_json
         }
         return jsonify(result)
@@ -202,7 +202,7 @@ def get_token():
         logger.success(f"user_id:'{user_id}' get token successfully, the token is {token}")
         result = {
             'retcode': 0,
-            'messge': 'success',
+            'message': 'success',
             'data': {'token': token}
         }
         return jsonify(result), 200
@@ -223,9 +223,11 @@ def login():
         if account_got:
             if account_name == account_got.username and account_got.validate_password(password):
                 login_user(account_got)
+                account_got.login = True
+                db.session.commit()
                 res = {
                     'retcode': 0,
-                    'messge': 'success',
+                    'message': 'success',
                 }
                 return jsonify(res), 200
     except Exception as e:
@@ -246,10 +248,38 @@ def logout():
 
     res = {
         'retcode': 0,
-        'messge': 'success',
+        'message': 'success',
     }
 
     return jsonify(res), 200
+
+
+@app.route('/update_password', methods=['POST'])
+@login_required
+def update_password():
+    try:
+        data = request.get_json()
+        name = data.get('account_name')
+        npd = data.get("new_password")
+        cpd = data.pop('current_password')
+        account_to_update = Account(name, cpd)
+        account_got = db.session.execute(select(account_to_update)).scalar()
+
+        if account_got and name == account_got.username and account_got.validate_password(cpd):
+            account_got.password = npd
+            db.session.commit()
+            return jsonify({
+                'retcode': 0,
+                'message': 'success',
+            }), 200
+
+    except Exception as e:
+        logger.error(f"update password failed, the exception is {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
+    return jsonify({
+        'retcode': -1,
+        'message': 'update password failed check your password or account name',
+    }), 400
 
 
 if __name__ == '__main__':
