@@ -2,12 +2,18 @@
 import json
 import os
 import time
+
+from flask_login import login_user, login_required, logout_user
+from flask_sqlalchemy import SQLAlchemy
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from openai import OpenAI
 from loguru import logger
+from sqlalchemy import select
+
+from admin.models.account import Account
 from util.redis_config import redis_client
 
 from admin.token_helper import TokenHelper
@@ -42,9 +48,12 @@ embeddings = OpenAIEmbeddings(
 
 # Initialize Chroma instance
 chroma = Chroma(persist_directory=CHROMA_DB_DIR,
-    embedding_function=embeddings,
-    collection_name=CHROMA_COLLECTION_NAME
-)
+                embedding_function=embeddings,
+                collection_name=CHROMA_COLLECTION_NAME
+                )
+
+# db orm
+db = SQLAlchemy()
 
 
 def get_user_history(user_id):
@@ -53,21 +62,25 @@ def get_user_history(user_id):
     history = [json.loads(item) for item in history_items]
     return history
 
+
 def search_and_answer(query, user_id, k=RECALL_TOP_K):
     # Perform similarity search
-    #results = chroma.similarity_search_with_relevance_scores(query, k=k)
+    # results = chroma.similarity_search_with_relevance_scores(query, k=k)
     t1 = time.time()
     results = chroma.similarity_search_with_score(query, k=k)
     time_cost1 = time.time() - t1
-    logger.info(f"for the query:'{query}' and user_id:'{user_id}, the top {k} results are: {results} \n*******\nthe time_cost of similarity_search_with_score is {time_cost1}\n*******\n")
+    logger.info(
+        f"for the query:'{query}' and user_id:'{user_id}, the top {k} results are: {results} \n*******\nthe time_cost of similarity_search_with_score is {time_cost1}\n*******\n")
 
     # Build the prompt for GPT
-    context = "\n\n".join([f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
+    context = "\n\n".join(
+        [f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
 
     # Get user history from Redis
     user_history = get_user_history(user_id)
     # Include user history in the prompt
-    history_context = "\n--------------------\n".join([f"Previous Query: {item['query']}\nPrevious Answer: {item['answer']}" for item in user_history])
+    history_context = "\n--------------------\n".join(
+        [f"Previous Query: {item['query']}\nPrevious Answer: {item['answer']}" for item in user_history])
     logger.info(f"for the query:'{query}' and user_id:'{user_id}', the history_context is {history_context}")
 
     prompt = f"""
@@ -124,7 +137,6 @@ def search_and_answer(query, user_id, k=RECALL_TOP_K):
     Ensure each Markdown element is used appropriately for its intended purpose. Avoid common formatting errors such as inconsistent use of list symbols, improper nesting of Markdown elements, or broken link syntax.
     """
 
-
     # Call GPT model to generate an answer
     response = client.chat.completions.create(
         model=GPT_MODEL_NAME,
@@ -155,7 +167,8 @@ def smart_qa():
         answer = search_and_answer(query, user_id)
         time_cost = time.time() - beg
         answer_json = json.loads(answer)
-        logger.success(f"query:'{query}' and user_id:'{user_id}' is processed successfully, the answer is {answer} \n-------\nthe total time_cost is {time_cost}\n-------\n")
+        logger.success(
+            f"query:'{query}' and user_id:'{user_id}' is processed successfully, the answer is {answer} \n-------\nthe total time_cost is {time_cost}\n-------\n")
 
         # After generating the response from GPT
         # Store user query and GPT response in Redis
@@ -184,7 +197,6 @@ def get_token():
     if not user_id:
         return jsonify({'retcode': -1, 'message': 'user_id is required', 'data': {}}), 400
 
-
     try:
         token = TokenHelper().generate_token(user_id)
         logger.success(f"user_id:'{user_id}' get token successfully, the token is {token}")
@@ -193,10 +205,51 @@ def get_token():
             'messge': 'success',
             'data': {'token': token}
         }
-        return jsonify(result)
+        return jsonify(result), 200
     except Exception as e:
         logger.error(f"query:'{user_id}' get token failed, the exception is {e}")
         return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    account_name = data.get('account_name', '')
+    password = data.get('password', '')
+    account_to_login = Account(account_name, password)
+    account_got = db.session.execute(select(account_to_login)).scalar()
+
+    try:
+        if account_got:
+            if account_name == account_got.username and account_got.validate_password(password):
+                login_user(account_got)
+                res = {
+                    'retcode': 0,
+                    'messge': 'success',
+                }
+                return jsonify(res), 200
+    except Exception as e:
+        logger.error(f"query:'{account_to_login}' login failed, the exception is {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
+
+    return jsonify({'retcode': -1, 'message': 'username or password is incorrect', }), 400
+
+
+@app.route('/logout', methods=['POST'])
+@login_required
+def logout():
+    try:
+        logout_user()
+    except Exception as e:
+        logger.error(f"logout failed, the exception is {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
+
+    res = {
+        'retcode': 0,
+        'messge': 'success',
+    }
+
+    return jsonify(res), 200
 
 
 if __name__ == '__main__':

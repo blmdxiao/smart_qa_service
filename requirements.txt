@@ -12,3 +12,6 @@ gradio==4.19.2
 python-dotenv==1.0.1
 redis==5.0.3
 PyJWT
+flask-sqlalchemy==3.1.1
+werkzeug==3.0.1
+flask-login==0.6.3
