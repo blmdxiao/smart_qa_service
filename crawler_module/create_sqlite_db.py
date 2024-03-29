@@ -1,7 +1,7 @@
 # coding=utf-8
 import os
 import sqlite3
-from config import SQLITE_DB_DIR, SQLITE_DB_NAME
+from app_config import SQLITE_DB_DIR, SQLITE_DB_NAME
 
 
 if not os.path.exists(SQLITE_DB_DIR):
