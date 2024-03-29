@@ -7,12 +7,13 @@ import sqlite3
 import time
 from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
-from config import SQLITE_DB_DIR, SQLITE_DB_NAME, MAX_CRAWLER_REQUESTS, DOWNLOAD_HTML_DIR, MAX_EMBEDDING_INPUT
+from app_config import SQLITE_DB_DIR, SQLITE_DB_NAME, MAX_CRAWLER_REQUESTS, DOWNLOAD_HTML_DIR, MAX_EMBEDDING_INPUT
 
 
 class AsyncCrawler:
 
-    def __init__(self, base_url, sqlite_db_path=f"{SQLITE_DB_DIR}/{SQLITE_DB_NAME}", max_requests=MAX_CRAWLER_REQUESTS, download_html_dir=DOWNLOAD_HTML_DIR):
+    def __init__(self, base_url, sqlite_db_path=f"{SQLITE_DB_DIR}/{SQLITE_DB_NAME}", max_requests=MAX_CRAWLER_REQUESTS,
+                 download_html_dir=DOWNLOAD_HTML_DIR):
         self.base_url = self.normalize_url(base_url)
         self.sqlite_db_path = sqlite_db_path
         self.visited_urls = set()
@@ -44,21 +45,36 @@ class AsyncCrawler:
         with open(file_path, 'w') as fd:
             fd.write(content)
         conn = sqlite3.connect(self.sqlite_db_path)
-        cursor = conn.cursor()
-        timestamp = int(time.time())
-        #`doc_status` meanings:
-        #  1 - 'Web page recorded'
-        #  2 - 'Web page crawling'
-        #  3 - 'Web page crawled'
-        #  4 - 'Web text Embedding stored in Chroma'
-        doc_status = 3
-        cursor.execute('INSERT INTO t_raw_tab (url, content, content_length, doc_status, ctime, mtime) VALUES (?, ?, ?, ?, ?, ?)',
-                  (url, content, len(content), doc_status, timestamp, timestamp))
-        conn.commit()
-        conn.close()
+        query_cur = conn.cursor()
+        query_cur.execute('SELECT id,url ,version, doc_status FROM t_raw_tab where url = ?', url)
+        url_record = query_cur.fetchone()
+        url, version, doc_status = url_record
+
+        if url_record:
+            version = +1
+            update_cursor = conn.cursor()
+            update_cursor.execute(
+                'update t_raw_tab set version=?,doc_status=?,content=?,content_length=?,mtime=? where url = ?',
+                version, 3, content, len(content), int(time.time()), url)
+        else:
+            # insert url and content
+            cursor = conn.cursor()
+            timestamp = int(time.time())
+            # `doc_status` meanings:
+            #  1 - 'Web page recorded'
+            #  2 - 'Web page crawling'
+            #  3 - 'Web page crawled'
+            #  4 - 'Web text Embedding stored in Chroma'
+            doc_status = 3
+            cursor.execute(
+                'INSERT INTO t_raw_tab (url, content, content_length, doc_status, ctime, mtime) VALUES (?, ?, ?, ?, ?, ?)',
+                (url, content, len(content), doc_status, timestamp, timestamp))
+
+            conn.commit()
+            conn.close()
 
     async def parse_links(self, session, html, url):
-        #text, links = await self.parse_content(html, url)
+        # text, links = await self.parse_content(html, url)
         text, links = await self.parse_content_v2(html, url)
         await self.save_content_to_db_and_disk(url, text)
         for full_link in links:
@@ -182,10 +198,10 @@ class AsyncCrawler:
 
 
 if __name__ == "__main__":
-    #base_url = "https://www.openim.io/en"
-    #base_url = "https://docs.openim.io/"
+    # base_url = "https://www.openim.io/en"
+    # base_url = "https://docs.openim.io/"
 
-    #url_vec = ["https://www.openim.io/en", "https://docs.openim.io/"]
+    # url_vec = ["https://www.openim.io/en", "https://docs.openim.io/"]
     url_vec = ["https://www.openim.io/en"]
     for base_url in url_vec:
         print(f"base_url={base_url}")

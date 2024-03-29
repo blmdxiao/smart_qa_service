@@ -5,7 +5,9 @@ import time
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.schema.document import Document
 from langchain_community.vectorstores import Chroma
-from config import SQLITE_DB_DIR, SQLITE_DB_NAME, CHROMA_DB_DIR, CHROMA_COLLECTION_NAME, OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL_NAME, BATCH_SIZE
+
+from admin.models.doc_embedding_map import DocEmbeddingMap
+from app_config import SQLITE_DB_DIR, SQLITE_DB_NAME, CHROMA_DB_DIR, CHROMA_COLLECTION_NAME, OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL_NAME, BATCH_SIZE
 
 
 class DocumentEmbedder:
@@ -30,6 +32,14 @@ class DocumentEmbedder:
         conn = sqlite3.connect(self.sqlite_db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT id, url, content FROM t_raw_tab LIMIT ? OFFSET ?", (limit, offset))
+        data = cursor.fetchall()
+        conn.close()
+        return data
+
+    def fetch_preprocessed_data_by_ids(self,ids :list):
+        conn = sqlite3.connect(self.sqlite_db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, url, content FROM t_raw_tab where id in ?", ids)
         data = cursor.fetchall()
         conn.close()
         return data
@@ -100,6 +110,27 @@ class DocumentEmbedder:
             self.compute_and_store_embeddings(data)
             offset += batch_size
         print("Embedding computation and storage completed.")
+
+
+    def delete_documents(self, url_ids: list):
+
+        map_query_all = DocEmbeddingMap.query.filter(DocEmbeddingMap.doc_id.in_(url_ids)).all()
+        """
+        Delete multiple documents from Chroma and associated metadata from the database.
+
+        :param doc_ids: A list of document IDs to delete.
+        """
+        ## TODO add delete chroma
+        # Delete documents from Chroma
+        self.chroma.delete_documents_by_ids([])
+
+        # Delete associated metadata from the database
+        conn = sqlite3.connect(self.sqlite_db_path)
+        cursor = conn.cursor()
+        cursor.executemany("DELETE FROM t_doc_embedding_map_tab WHERE doc_id = ?", [(doc_id,) for doc_id in url_ids])
+        cursor.executemany("DELETE FROM t_raw_tab WHERE id = ?", [(doc_id,) for doc_id in url_ids])
+        conn.commit()
+        conn.close()
 
 if __name__ == "__main__":
     sqlite_db_path = f"{SQLITE_DB_DIR}/{SQLITE_DB_NAME}"

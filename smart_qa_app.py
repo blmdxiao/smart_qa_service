@@ -1,9 +1,12 @@
 # coding=utf-8
+import asyncio
 import json
+import logging
 import os
+import sys
+import threading
 import time
 
-from flask_login import login_user, login_required, logout_user
 from flask_sqlalchemy import SQLAlchemy
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
@@ -11,9 +14,12 @@ from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from openai import OpenAI
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
-from admin.models.account import Account
+from admin.models.db import db
+from app_config import SQLITE_DB_DIR, SQLITE_DB_NAME
+from crawler_module.document_crawler import AsyncCrawler
+from crawler_module.document_embedding import DocumentEmbedder
 from util.redis_config import redis_client
 
 from admin.token_helper import TokenHelper
@@ -34,8 +40,25 @@ MAX_QUERY_SIZE = int(os.getenv('MAX_QUERY_SIZE', '200'))
 RECALL_TOP_K = int(os.getenv('RECALL_TOP_K', '3'))
 MAX_HISTORY_QUERY_SIZE = int(os.getenv('MAX_HISTORY_QUERY_SIZE', '5'))
 HISTORY_EXPIRE_TIME = int(os.getenv('HISTORY_EXPIRE_TIME', '259200'))
+# SQLite URI compatible
+WIN = sys.platform.startswith('win')
+if WIN:
+    prefix = 'sqlite:///'
+else:
+    prefix = 'sqlite:////'
 
 app = Flask(__name__)
+
+# db orm
+basedir = os.path.join(os.getcwd(), f'/{SQLITE_DB_DIR}/')
+
+app.config['SQLALCHEMY_DATABASE_URI'] = prefix + os.path.join(basedir, SQLITE_DB_NAME)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+db.init_app(app)
+
+with app.app_context():
+    db.create_all()
 
 # Set OpenAI GPT API key
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -51,9 +74,16 @@ chroma = Chroma(persist_directory=CHROMA_DB_DIR,
                 embedding_function=embeddings,
                 collection_name=CHROMA_COLLECTION_NAME
                 )
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# db orm
-db = SQLAlchemy()
+from admin.models.account import Account
+from admin.models.bot_setting import BotSetting
+from admin.models.crawl_content_task import CrawlUrlContentTask
+from admin.models.crawl_url_task import CrawlUrlsTask
+from admin.models.doc_embedding_map import DocEmbeddingMap
+from admin.models.response.get_crawl_url_status import CommonResponse, UrlStatusData
 
 
 def get_user_history(user_id):
@@ -147,7 +177,7 @@ def search_and_answer(query, user_id, k=RECALL_TOP_K):
     return ret
 
 
-@app.route('/smart_qa', methods=['POST'])
+@app.route('/open_kf_api/smart_qa', methods=['POST'])
 def smart_qa():
     data = request.json
     query = data.get('query', '')
@@ -187,99 +217,350 @@ def smart_qa():
         return jsonify(result)
     except Exception as e:
         logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed, the exception is {e}")
-        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 200
 
 
-@app.route('/get_token', methods=['POST'])
+@app.route('/open_kf_api/get_token', methods=['POST'])
 def get_token():
     data = request.json
-    user_id = data.get('user_id', '')
+    user_id = data.get('user_id')
+
+    # Check if user_id is provided
     if not user_id:
-        return jsonify({'retcode': -1, 'message': 'user_id is required', 'data': {}}), 400
+        logger.error("user_id is required but not provided.")
+        return jsonify({'retcode': -1, 'message': 'user_id is required', 'data': {}}), 200  # Use 400 for bad request
 
     try:
-        token = TokenHelper().generate_token(user_id)
-        logger.success(f"user_id:'{user_id}' get token successfully, the token is {token}")
-        result = {
+        # Generate token
+        token = TokenHelper.generate_token(user_id)  # Assuming generate_token is a @staticmethod
+        logger.info(f"user_id: '{user_id}' get token successfully, the token is {token}")
+        return jsonify({
             'retcode': 0,
             'message': 'success',
             'data': {'token': token}
-        }
-        return jsonify(result), 200
+        }), 200  # Success
     except Exception as e:
-        logger.error(f"query:'{user_id}' get token failed, the exception is {e}")
-        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
+        logger.error(f"user_id: '{user_id}' get token failed, the exception is {e}")
+        return jsonify(
+            {'retcode': -2, 'message': 'Failed to generate token', 'data': {}}), 200  # Use 500 for server error
 
 
-@app.route('/login', methods=['POST'])
+@app.route('/open_kf_api/login', methods=['POST'])
 def login():
     data = request.json
-    account_name = data.get('account_name', '')
-    password = data.get('password', '')
-    account_to_login = Account(account_name, password)
-    account_got = db.session.execute(select(account_to_login)).scalar()
+    account_name = data.get('account_name')
+    password = data.get('password')
+
+    if not account_name or not password:
+        return jsonify({'retcode': -1, 'message': 'Login failed due to missing credentials.', 'data': {}}), 200
 
     try:
-        if account_got:
-            if account_name == account_got.username and account_got.validate_password(password):
-                login_user(account_got)
-                account_got.login = True
-                db.session.commit()
-                res = {
-                    'retcode': 0,
-                    'message': 'success',
-                }
-                return jsonify(res), 200
-    except Exception as e:
-        logger.error(f"query:'{account_to_login}' login failed, the exception is {e}")
-        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
-
-    return jsonify({'retcode': -1, 'message': 'username or password is incorrect', }), 400
-
-
-@app.route('/logout', methods=['POST'])
-@login_required
-def logout():
-    try:
-        logout_user()
-    except Exception as e:
-        logger.error(f"logout failed, the exception is {e}")
-        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
-
-    res = {
-        'retcode': 0,
-        'message': 'success',
-    }
-
-    return jsonify(res), 200
-
-
-@app.route('/update_password', methods=['POST'])
-@login_required
-def update_password():
-    try:
-        data = request.get_json()
-        name = data.get('account_name')
-        npd = data.get("new_password")
-        cpd = data.pop('current_password')
-        account_to_update = Account(name, cpd)
-        account_got = db.session.execute(select(account_to_update)).scalar()
-
-        if account_got and name == account_got.username and account_got.validate_password(cpd):
-            account_got.password = npd
+        account_got = db.session.query(Account).filter_by(account_name=account_name).first()
+        if account_got and account_got.validate_password(password):
+            account_got.login = True
+            token = TokenHelper.generate_token(account_name)
             db.session.commit()
             return jsonify({
                 'retcode': 0,
                 'message': 'success',
+                'data': {'token': token}
             }), 200
+    except SQLAlchemyError as e:
+        logger.error(f"Database error during login attempt for account_name: '{account_name}', exception: {e}")
+        return jsonify({'retcode': -2, 'message': 'Login failed due to a server error.', 'data': {}}), 200
+
+    return jsonify({'retcode': -1, 'message': 'Login failed due to incorrect username or password.', 'data': {}}), 200
+
+
+@app.route('/open_kf_api/logout', methods=['POST'])
+def logout():
+    try:
+        login_response = verify_login()
+        if login_response is not None:
+            return login_response
+
+        account_name = get_request_account_name_by_token()
+        account_got = get_account_by_name(account_name)
+
+        if account_got and account_got.login:
+            account_got.login = False
+            account_got.token = ''
+            db.session.commit()
+        else:
+            return jsonify({'retcode': -1, 'message': 'login first'}), 200
+    except Exception as e:
+        logger.error(f"logout failed, the exception is {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 200
+
+    return jsonify({'retcode': 0, 'message': 'success'}), 200
+
+
+def verify_login():
+    token = get_request_token()
+    if not token:
+        return jsonify({"retcode": -1, "message": "token is none", "data": {}}), 400
+    verify_token_payload = TokenHelper.verify_token(token)
+    name = verify_token_payload["user_id"]
+    account_by_name = get_account_by_name(name)
+    if not account_by_name or not account_by_name.is_login():
+        return jsonify({'retcode': -1, 'message': 'login first'}), 400
+    return None
+
+
+def get_request_account_name_by_token():
+    token = get_request_token()
+    if not token:
+        return jsonify({"retcode": -1, "message": "token is none", "data": {}}), 400
+    verify_token_payload = TokenHelper.verify_token(token)
+    return verify_token_payload["user_id"]
+
+
+def get_account_by_name(account_name):
+    try:
+        account_got = Account.query.filter_by(username=account_name).first()
+        return account_got
+    except Exception as e:
+        logger.error(f"An error occurred while fetching account by name '{account_name}': {e}")
+        return None
+
+
+def get_request_token():
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or 'Bearer ' not in auth_header:
+        logger.error("Authorization header missing or invalid")
+        return None
+    token = auth_header.split(' ')[1]
+    return token
+
+
+@app.route('/open_kf_api/update_password', methods=['POST'])
+def update_password():
+    try:
+        login = verify_login()
+        if not login:
+            return login
+        data = request.get_json()
+        name = get_account_by_name(data["name"])
+        npd = data.get("new_password")
+        cpd = data.get('current_password')
+        account_got = Account.query.filter_by(account_name=name).first()
+
+        if not account_got or not account_got.validate_password(cpd):
+            return jsonify({
+                'retcode': -1,
+                'message': 'Account not found or current password is incorrect.',
+            }), 200
+
+        account_got.password(npd)
+        db.session.commit()
+        return jsonify({
+            'retcode': 0,
+            'message': 'success',
+        }), 200
 
     except Exception as e:
         logger.error(f"update password failed, the exception is {e}")
-        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 500
-    return jsonify({
-        'retcode': -1,
-        'message': 'update password failed check your password or account name',
-    }), 400
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 200
+
+
+@app.route('/open_kf_api/crawl_urls', methods=['POST'])
+def crawl_urls():
+    login_verify_message = verify_login()
+    if login_verify_message:
+        return login_verify_message
+
+    data = request.get_json()
+    site_url = data.get('site')
+
+    try:
+        task_got = db.session.query(CrawlUrlsTask).filter_by(site_url=site_url).first()
+
+        if not task_got:
+            new_task = CrawlUrlsTask(site_url=site_url, version=1, status=1)
+            db.session.add(new_task)
+            db.session.commit()
+        else:
+            if task_got.status != 2:
+                return jsonify({'retcode': -1, 'message': 'The site was submitted already'}), 200
+            task_got.version += 1
+            db.session.commit()
+
+        crawler = AsyncCrawler(site_url)
+        thread = threading.Thread(target=start_async_crawl_and_wait, args=(crawler,))
+        thread.start()
+
+    except Exception as e:
+        logger.error(f"Add site task failed, the exception is {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 200
+    return jsonify({'retcode': 0, 'message': 'Success'}), 200
+
+
+def start_async_crawl_and_wait(crawler):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    future = asyncio.ensure_future(crawler.run())
+    loop.run_until_complete(future)
+    # update status=2
+    task = db.session.query(CrawlUrlsTask).filter_by(site_url=crawler.base_url).first()
+    if task:
+        task.status = 2
+        db.session.commit()
+    loop.close()
+
+
+@app.route('/open_kf_api/embedding_urls_content', methods=['POST'])
+def embedding_urls_content():
+    # 验证登录状态
+    login_response = verify_login()
+    if login_response:
+        return login_response  # 如果 verify_login 返回响应对象，直接返回该响应
+
+    data = request.get_json()
+    url_ids = data.get("urls", [])
+
+    if not url_ids:
+        return jsonify({'retcode': -1, 'message': "No URL IDs provided.", 'data': {}}), 200
+
+    try:
+        embedder = DocumentEmbedder()
+        preprocessed_data = embedder.fetch_preprocessed_data_by_ids(url_ids)
+
+        if not preprocessed_data:
+            return jsonify({'retcode': -1, 'message': "No data found for provided IDs.", 'data': {}}), 200
+
+        embedder.compute_and_store_embeddings(preprocessed_data)
+        return jsonify({'retcode': 0, 'message': "Success", 'data': {}}), 200
+
+    except Exception as e:
+        logger.error(f"Processing site task failed, the exception is {e}")
+        return jsonify({'retcode': -2, 'message': "Processing failed due to an error.", 'data': {}}), 200
+
+
+@app.route('/open_kf_api/get_crawl_url_status', methods=['post'])
+def get_crawl_url_status():
+    try:
+        login_response = verify_login()
+        if login_response:
+            return login_response
+
+        data = request.get_json()
+        site = data.get("site")
+
+        urls_task = CrawlUrlsTask.query.filter_by(site=site).first()
+        if not urls_task:
+            return jsonify(CommonResponse(retcode=0, message="success", data=None)), 200
+
+        if urls_task.status == 1:
+            response_data = UrlStatusData(status=1, urls=None)
+            return jsonify(CommonResponse(retcode=0, message="success", data=response_data)), 200
+
+        elif urls_task.status == 2:
+            site_content_all = CrawlUrlContentTask.query.filter_by(site=site, base_url_id=urls_task.id).all()
+            urls = [
+                {"url_id": content.id, "status": content.doc_status, "url": content.url,
+                 "length": content.content_length}
+                for content in site_content_all
+            ]
+            status_data = UrlStatusData(status=2, urls=urls)
+            return jsonify(CommonResponse(retcode=0, message="success", data=status_data)), 200
+
+    except Exception as e:
+        logger.error(f"Fetching crawl url status failed, exception: {e}")
+        return jsonify(CommonResponse(retcode=-2, message=str(e), data=None)), 200
+
+    return jsonify(CommonResponse(retcode=-1, message="Unhandled condition", data=None)), 200
+
+
+@app.route('/open_kf_api/get_all_embedding_url', methods=['POST'])
+def get_all_embedding_url():
+    try:
+        login_verify = verify_login()
+        if not login_verify:
+            return login_verify
+
+        page = request.json.get('page', 1)
+        size = request.json.get('size', 10)
+
+        total = DocEmbeddingMap.query.count()
+
+        embedding_map_query_all = DocEmbeddingMap.query.paginate(page, size, False)
+
+        if not embedding_map_query_all.items:
+            return jsonify(CommonResponse(retcode=0, message="No embedding URLs found.", data=None, total=total)), 200
+
+        ids = [embedding_map.id for embedding_map in embedding_map_query_all.items]
+        urls_all = CrawlUrlContentTask.query.filter(CrawlUrlContentTask.id.in_(ids)).all()
+        if not urls_all:
+            return jsonify(CommonResponse(retcode=0, message="No content URLs found.", data=None, total=total)), 200
+
+        urls = [url.url for url in urls_all]
+        response_data = {'urls': urls, 'total': total}
+        return jsonify(CommonResponse(retcode=0, message="Success", data=response_data)), 200
+
+    except Exception as e:
+        logger.error(f"Fetching embedding URLs failed: {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 200
+
+
+@app.route('/open_kf_api/delete_url', methods=['post'])
+def delete_url():
+    try:
+        login_verify = verify_login()
+        if not login_verify:
+            return login_verify
+
+        data = request.get_json()
+        urls = data.get("urls")
+        if not urls:
+            return jsonify({'retcode': -1, 'message': 'No URLs provided', 'data': {}}), 200
+
+        urls_all = CrawlUrlContentTask.query.filter(CrawlUrlContentTask.url.in_(urls)).all()
+        ids = [url.id for url in urls_all]
+
+        if ids:
+            DocumentEmbedder().delete_documents(ids)
+            return jsonify({'retcode': 0, 'message': 'Success', 'data': {}}), 200
+        else:
+            return jsonify({'retcode': -1, 'message': 'No matching URLs found', 'data': {}}), 200
+    except Exception as e:
+        logger.error(f"Delete URLs failed: {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 200
+
+
+@app.route('/open_kf_api/get_settings', methods=['post'])
+def get_settings():
+    try:
+        login_msg = verify_login()
+        if not login_msg:
+            return login_msg
+        first = BotSetting.query.filter().first()
+        return jsonify(CommonResponse(data=first, retcode=0, message="success")), 200
+    except Exception as e:
+        logger.error(f"add site task failed, the exception is {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 200
+
+
+@app.route('/open_kf_api/update_setting', methods=['post'])
+def update_setting():
+    try:
+        login_msg = verify_login()
+        if not login_msg:
+            return login_msg
+        data = request.get_json()
+
+        first = BotSetting.query.filter().first()
+        first.init_message = data['initMessage']
+        first.suggested_messages = data['suggested_messages']
+        first.bot_name = data['bot_name']
+        first.bot_avatar = data['bot_avatar']
+        first.chat_icon = data['chat_icon']
+        first.placeholder = data['placeholder']
+        first.model = data['model']
+        first.mtime = int(time.time())
+        return jsonify(CommonResponse(data=first, retcode=0, message="success")), 200
+    except Exception as e:
+        logger.error(f"add site task failed, the exception is {e}")
+        return jsonify({'retcode': -2, 'message': str(e), 'data': {}}), 200
 
 
 if __name__ == '__main__':

@@ -14,6 +14,7 @@ class TokenHelper:
         """生成 JWT token"""
         payload = {
             'user_id': user_id,
+            'timestamp': datetime.datetime.utcnow().timestamp(),
             'exp': datetime.datetime.utcnow() + TokenHelper.JWT_EXPIRATION_DELTA
         }
         return jwt.encode(payload, TokenHelper.JWT_SECRET, algorithm=TokenHelper.JWT_ALGORITHM)
