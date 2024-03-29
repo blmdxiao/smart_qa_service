@@ -63,16 +63,16 @@ class DocumentEmbedder:
                 # Create a Document object with the part content and metadata.
                 doc = Document(page_content=part_content, metadata=metadata)
                 # Add the document part to the list for batch addition.
-                ret = documents_to_add.append(doc)
-                if ret:
-                    records_to_add.append((doc_id, json.dumps(ret), timestamp, timestamp))
+                documents_to_add.append(doc)
                 part_index += 1
 
             # Check if there are document parts to add.
             if documents_to_add:
                 # Add all document parts to Chroma in a single batch operation.
-                ret = self.chroma.add_documents(documents_to_add)
-                print(f"doc_id={doc_id}, url={url} added {len(documents_to_add)} document parts to Chroma., ret={ret}")
+                embedding_id_vec = self.chroma.add_documents(documents_to_add)
+                print(f"doc_id={doc_id}, url={url} added {len(documents_to_add)} document parts to Chroma., embedding_id_vec={embedding_id_vec}")
+
+                records_to_add.append((doc_id, json.dumps(embedding_id_vec), timestamp, timestamp))
 
                 #`doc_status` meanings:
                 #  1 - 'Web page recorded',
