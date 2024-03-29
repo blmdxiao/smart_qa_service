@@ -410,10 +410,9 @@ def start_async_crawl_and_wait(crawler):
 
 @app.route('/open_kf_api/embedding_urls_content', methods=['POST'])
 def embedding_urls_content():
-    # 验证登录状态
     login_response = verify_login()
     if login_response:
-        return login_response  # 如果 verify_login 返回响应对象，直接返回该响应
+        return login_response
 
     data = request.get_json()
     url_ids = data.get("urls", [])
