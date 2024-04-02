@@ -20,6 +20,9 @@ class AsyncCrawlerSiteLink:
         self.version = version
         self.redis_lock = redis_lock
         self.count = 0
+        self.batch_urls_queue = asyncio.Queue()
+        self.queue_lock = asyncio.Lock()
+        self.batch_size = max_requests * 4
 
     async def fetch_page(self, session, url):
         logger.info(f"[CRAWL_LINK] fetch_page, url:'{url}'")
@@ -37,39 +40,81 @@ class AsyncCrawlerSiteLink:
     def normalize_url(self, url):
         return url.split('#')[0].rstrip('/')
 
-    async def save_link_to_db(self, url):
-        logger.info(f"[CRAWL_LINK] save_link_to_db, url:'{url}'")
+    async def add_url_to_queue(self, url):
+        logger.info(f"[CRAWL_LINK] add_url_to_queue, url:'{url}'")
+        batch_urls = []
+        async with self.queue_lock:
+            await self.batch_urls_queue.put(url)
+            if self.batch_urls_queue.qsize() >= self.batch_size:
+                batch_urls = await self.process_batch_urls()
+
+        if batch_urls:
+            # Process batch_urls to separate existing and new URLs
+            existing_urls, new_urls = await self.check_urls_existence(batch_urls)
+            # Update existing URLs and insert new URLs
+            await self.update_and_insert_urls(existing_urls, new_urls)
+
+    async def process_batch_urls(self):
+        logger.info(f"[CRAWL_LINK] process_batch_urls")
+        # Lock is already acquired in add_url_to_queue
+        batch_urls = []
+        while not self.batch_urls_queue.empty():
+            batch_urls.append(await self.batch_urls_queue.get())
+        return batch_urls
+
+    async def check_urls_existence(self, batch_urls):
+        logger.info(f"[CRAWL_LINK] check_urls_existence, batch_urls:{batch_urls}")
+        """
+        Check which URLs exist in the database and separate them from new URLs.
+        """
+        # Prepare query to check existence
+        placeholders = ', '.join(['?'] * len(batch_urls))
+        query = f"SELECT url, id FROM t_raw_tab WHERE url IN ({placeholders})"
+
         async with aiosqlite.connect(self.sqlite_db_path) as db:
             # Enable WAL mode for better concurrency
             await db.execute("PRAGMA journal_mode=WAL;")
 
-            # Check if the URL already exists
-            cursor = await db.execute('SELECT id FROM t_raw_tab WHERE url = ?', (url,))
-            result = await cursor.fetchone()
+            cursor = await db.execute(query, batch_urls)
+            existing_records = await cursor.fetchall()
 
-            timestamp = int(time.time())
-            if await self.redis_lock.aacquire_lock():
-                try:
-                    if result:
-                        # Extract the id from the result
-                        record_id = result[0]
-                        # If exists, update doc_status to 1, and also update version and mtime using id
-                        logger.info(f"[CRAWL_LINK] save_link_to_db, url:'{url}' is existed in t_raw_tab, doc_id:{record_id}, update version:{self.version}")
-                        await db.execute(
-                            'UPDATE t_raw_tab SET doc_status = ?, version = ?, mtime = ? WHERE id = ?',
-                            (1, self.version, timestamp, record_id)
-                        )
-                    else:
-                        # If not exists, insert a new record
-                        logger.info(f"[CRAWL_LINK] save_link_to_db, url:'{url}' is not existed in t_raw_tab, version:{self.version}")
-                        await db.execute(
-                            'INSERT INTO t_raw_tab (domain, url, content, content_length, doc_status, version, ctime, mtime) '
-                            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                            (self.domain, url, '', 0, 1, self.version, timestamp, timestamp)
-                        )
+        # Convert list of existing records into a dict for easy lookup
+        existing_urls = {record[0]: record[1] for record in existing_records}
+        # Identify new URLs
+        new_urls = [url for url in batch_urls if url not in existing_urls]
+        return existing_urls, new_urls
+
+    async def update_and_insert_urls(self, existing_urls, new_urls):
+        logger.info(f"[CRAWL_LINK] update_and_insert_urls, existing_urls:{existing_urls}, new_urls:{new_urls}")
+        """
+        Update existing URLs and insert new URLs into the database in a single operation.
+        """
+        timestamp = int(time.time())
+        update_query = "UPDATE t_raw_tab SET doc_status = ?, version = ?, mtime = ? WHERE id = ?"
+        insert_query = "INSERT INTO t_raw_tab (domain, url, content, content_length, doc_status, version, ctime, mtime) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+
+        # Prepare data for updating existing URLs
+        updates = [(1, self.version, timestamp, url_id) for url_id in existing_urls.values()]
+        # Prepare data for inserting new URLs
+        inserts = [(self.domain, url, '', 0, 1, self.version, timestamp, timestamp) for url in new_urls]
+
+        if await self.redis_lock.aacquire_lock():
+            try:
+                async with aiosqlite.connect(self.sqlite_db_path) as db:
+                    # Enable WAL mode for better concurrency
+                    await db.execute("PRAGMA journal_mode=WAL;")
+
+                    if updates:
+                        await db.executemany(update_query, updates)
+                    if inserts:
+                        await db.executemany(insert_query, inserts)
                     await db.commit()
-                finally:
-                    await self.redis_lock.arelease_lock()
+            finally:
+                await self.redis_lock.arelease_lock()
+
+    async def save_link_to_db(self, url):
+        logger.info(f"[CRAWL_LINK] save_link_to_db, url:'{url}'")
+        await self.add_url_to_queue(url)
 
     async def parse_link(self, session, html, url):
         logger.info(f"[CRAWL_LINK] parse_link, url:'{url}'")
@@ -135,12 +180,26 @@ class AsyncCrawlerSiteLink:
                     await self.redis_lock.arelease_lock()
 
     async def run(self):
-        logger.info(f"[CRAWL_LINK] run begin!")
+        begin_time = int(time.time())
+        logger.info(f"[CRAWL_LINK] run begin! base_url:{self.base_url}', begin_time:{begin_time}")
+
         async with aiohttp.ClientSession() as session:
             self.visited_urls.add(self.base_url)
             await self.crawl_link(session, self.base_url)
 
+        # Process the remaining urls in batch_urls_queue
+        if self.batch_urls_queue.qsize() > 0:
+            batch_urls = []
+            while not self.batch_urls_queue.empty():
+                batch_urls.append(await self.batch_urls_queue.get())
+
+            existing_urls, new_urls = await self.check_urls_existence(batch_urls)
+            await self.update_and_insert_urls(existing_urls, new_urls)
+
         await self.mark_expired_link()
         await self.update_site_domain_status(2)
-        logger.info(f"[CRAWL_LINK] run end!")
+
+        end_time = int(time.time())
+        timecost = end_time - begin_time
+        logger.info(f"[CRAWL_LINK] run end! base_url:'{self.base_url}', end_time:{end_time}, timecost:{timecost}")
 

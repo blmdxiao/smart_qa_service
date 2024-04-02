@@ -771,7 +771,6 @@ def init_bot_setting():
 
 
 @app.route('/open_kf_api/get_bot_setting', methods=['POST'])
-@token_required
 def get_bot_setting():
     """Retrieve bot setting."""
     conn = None
@@ -782,8 +781,8 @@ def get_bot_setting():
 
         cur.execute('SELECT * FROM t_bot_setting_tab LIMIT 1')
         setting = cur.fetchone()
-        setting = dict(setting)
         if setting:
+            setting = dict(setting)
             # Process and return the setting details
             setting_data = {k: json.loads(v) if k in ['initial_messages', 'suggested_messages'] else v for k, v in setting.items()}
             return jsonify({'retcode': 0, 'message': 'Success', 'data': {'config': setting_data}})

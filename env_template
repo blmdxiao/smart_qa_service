@@ -1,6 +1,6 @@
 SQLITE_DB_DIR = "sqlite_dir"
 SQLITE_DB_NAME = "mydatabase.sqlite3"
-MAX_CRAWL_PARALLEL_REQUEST = 5
+MAX_CRAWL_PARALLEL_REQUEST = 10
 CHROMA_DB_DIR = "chroma_dir"
 CHROMA_COLLECTION_NAME = "mychroma_collection"
 OPENAI_API_KEY = "xxxx"
