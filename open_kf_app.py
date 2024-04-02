@@ -890,9 +890,9 @@ def submit_crawl_site():
 
     domain = urlparse(site).netloc
     logger.info(f"domain is '{domain}'")
-    timestamp = int(timestamp)
     conn = None
     try:
+        timestamp = int(timestamp)
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL;")
@@ -912,7 +912,7 @@ def submit_crawl_site():
                     cur.execute("UPDATE t_domain_tab SET version = ?, domain_status = 1, mtime=? WHERE id = ?", (timestamp, int(time.time()), domain_id))
                 else:
                     # Insert new domain record
-                    cur.execute("INSERT INTO t_domain_tab (domain, domain_status, version, ctime, mtime) VALUES (?, 1, ?, ?, ?)", (domain, timestamp, int(timestamp), int(timestamp)))
+                    cur.execute("INSERT INTO t_domain_tab (domain, domain_status, version, ctime, mtime) VALUES (?, 1, ?, ?, ?)", (domain, timestamp, int(time.time()), int(time.time())))
 
                 conn.commit()
             finally:
@@ -932,35 +932,35 @@ def submit_crawl_site():
 @app.route('/open_kf_api/get_crawl_site_info', methods=['POST'])
 @token_required
 def get_crawl_site_info():
-    """Fetch the crawl status information for a given site."""
+    """Fetch the crawl status information for a given site or all sites if site parameter is not provided."""
     data = request.json
-    site = data.get('site')
+    site = data.get('site', None)  # Make site an optional parameter
 
-    if not site:
-        return jsonify({'retcode': -10004, 'message': 'Site parameter is required', 'data': {}})
-
-    if not is_valid_url(site):
-        logger.error(f"site:'{site} is not a valid URL!")
-        return jsonify({'retcode': -10007, 'message': f"site:'{site}' is not a valid URL", 'data': {}})
-
-    domain = urlparse(site).netloc
-    logger.info(f"domain is '{domain}'")
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL;")
 
-        cur.execute(
-            "SELECT * FROM t_domain_tab WHERE domain = ?",
-            (domain,)
-        )
-        site_info = cur.fetchone()
-        if site_info:
-            return jsonify({'retcode': 0, 'message': 'Success', 'data': {'site_info': dict(site_info)}})
+        if site:
+            if not is_valid_url(site):
+                logger.error(f"site:'{site}' is not a valid URL!")
+                return jsonify({'retcode': -10007, 'message': f"site:'{site}' is not a valid URL", 'data': {}})
+            domain = urlparse(site).netloc
+            logger.info(f"Searching for domain: '{domain}'")
+            cur.execute("SELECT * FROM t_domain_tab WHERE domain = ?", (domain,))
         else:
-            return jsonify({'retcode': -10006, 'message': 'Site information not found', 'data': {}})
+            logger.info("Fetching information for all sites.")
+            cur.execute("SELECT * FROM t_domain_tab")
+
+        rows = cur.fetchall()
+        if rows:
+            sites_info = [dict(row) for row in rows]
+            return jsonify({'retcode': 0, 'message': 'Success', 'data': {'sites_info': sites_info}})
+        else:
+            return jsonify({'retcode': -10008, 'message': 'No site information found', 'data': {}})
     except Exception as e:
+        logger.error(f"An error occurred: {e}")
         return jsonify({'retcode': -10006, 'message': f'An error occurred: {str(e)}', 'data': {}})
     finally:
         if conn:
@@ -970,52 +970,39 @@ def get_crawl_site_info():
 @app.route('/open_kf_api/get_crawl_url_list', methods=['POST'])
 @token_required
 def get_crawl_url_list():
-    """Fetch the list of URLs and their status information for a given site, including the domain status."""
+    """Fetch the list of URLs and their status information. If the site is specified and valid, returns information for that site. Returns an error if the site is specified but invalid."""
     data = request.json
-    site = data.get('site')
+    site = data.get('site', None)  # Make site an optional parameter
 
-    # Check for missing or invalid site URL
-    if not site:
-        return jsonify({'retcode': -10004, 'message': 'Site is required', 'data': {}})
-
-    if not is_valid_url(site):
-        logger.error(f"Site: '{site}' is not a valid URL.")
-        return jsonify({'retcode': -10007, 'message': f"Site: '{site}' is not a valid URL.", 'data': {}})
-
-    domain = urlparse(site).netloc
-    logger.info(f"domain is '{domain}'")
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL;")
 
-        # Fetch the domain status from the t_domain_tab table
-        cur.execute("SELECT domain_status FROM t_domain_tab WHERE domain = ?", (domain,))
-        domain_status_row = cur.fetchone()
-        domain_status = domain_status_row["domain_status"] if domain_status_row else None
+        response_data = {
+            'url_list': []
+        }
 
-        # Proceed only if the domain status exists
-        if domain_status is not None:
-            # Fetch URL list from the t_raw_tab table for the given domain
-            cur.execute(
-                "SELECT id, domain, url, content_length, doc_status, version, ctime, mtime FROM t_raw_tab WHERE domain = ?",
-                (domain,)
-            )
-            rows = cur.fetchall()
-            url_list = [dict(row) for row in rows]  # Convert rows to dictionaries
+        if site is not None:
+            if not is_valid_url(site):
+                logger.error(f"Provided site: '{site}' is not a valid URL.")
+                return jsonify({'retcode': -10007, 'message': f"Provided site: '{site}' is not a valid URL.", 'data': {}})
 
-            return jsonify({
-                'retcode': 0,
-                'message': 'Success',
-                'data': {
-                    'domain_status': domain_status,
-                    'url_list': url_list
-                }
-            })
+            domain = urlparse(site).netloc
+            logger.info(f"Fetching URL list for domain: '{domain}'")
+            cur.execute("SELECT domain_status FROM t_domain_tab WHERE domain = ?", (domain,))
+            domain_status_row = cur.fetchone()
+            if domain_status_row:
+                response_data['domain_status'] = domain_status_row['domain_status']
+            cur.execute("SELECT id, url, content_length, doc_status, version, ctime, mtime FROM t_raw_tab WHERE domain = ?", (domain,))
         else:
-            # Domain status not found
-            return jsonify({'retcode': -10008, 'message': 'Domain status not found', 'data': {}})
+            logger.info("Fetching URL list for all domains.")
+            cur.execute("SELECT id, url, content_length, doc_status, version, ctime, mtime FROM t_raw_tab")
+
+        rows = cur.fetchall()
+        response_data['url_list'] = [dict(row) for row in rows]
+        return jsonify({'retcode': 0, 'message': 'Success', 'data': response_data})
     except Exception as e:
         logger.error(f"An error occurred while fetching URL list: {str(e)}")
         return jsonify({'retcode': -10006, 'message': f'An error occurred: {str(e)}', 'data': {}})
@@ -1033,6 +1020,7 @@ def async_crawl_content_task(domain, url_dict, task_type):
       2 - delete_content
       3 - update_content
     """
+
     """Start the crawl content task in an asyncio event loop."""
     logger.info(f"create crawler_content")
     crawler_content = AsyncCrawlerSiteContent(
