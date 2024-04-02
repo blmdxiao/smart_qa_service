@@ -10,8 +10,6 @@ from urllib.parse import urljoin, urlparse
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from langchain.embeddings.openai import OpenAIEmbeddings
-#from langchain_community.vectorstores import Chroma
-#from loguru import logger
 from openai import OpenAI
 from werkzeug.security import generate_password_hash, check_password_hash
 from utils.redis_config import redis_client
@@ -22,9 +20,6 @@ from crawler_module.web_link_crawler import AsyncCrawlerSiteLink
 from crawler_module.web_content_crawler import AsyncCrawlerSiteContent
 from crawler_module.document_embedding import DocumentEmbedder
 
-
-# Configure loguru logger
-#logger.add("error.log", rotation="10 MB")
 
 # Load environment variables from .env file
 load_dotenv()
@@ -59,12 +54,6 @@ g_embeddings = OpenAIEmbeddings(
     model=OPENAI_EMBEDDING_MODEL_NAME,
     openai_api_key=OPENAI_API_KEY
 )
-
-# Initialize Chroma instance
-#g_chroma = Chroma(persist_directory=CHROMA_DB_DIR,
-#    embedding_function=g_embeddings,
-#    collection_name=CHROMA_COLLECTION_NAME
-#)
 
 g_document_embedder = DocumentEmbedder(
     persist_directory=CHROMA_DB_DIR,
@@ -182,48 +171,6 @@ def search_and_answer(query, user_id, k=RECALL_TOP_K):
     )
     ret = response.choices[0].message.content
     return ret
-
-
-#@app.route('/smart_qa', methods=['POST'])
-#def smart_qa():
-#    data = request.json
-#    query = data.get('query', '')
-#    user_id = data.get('user_id', '')
-#    if not query or not user_id:
-#        return jsonify({'retcode': -1, 'message': 'query and user_id are required', 'data': {}})
-#
-#    if len(query) > MAX_QUERY_SIZE:
-#        query = query[:MAX_QUERY_SIZE]
-#
-#    last_character = query[-1]
-#    if last_character != "？" and last_character != "?":
-#        query += "?"
-#
-#    try:
-#        beg = time.time()
-#        answer = search_and_answer(query, user_id)
-#        time_cost = time.time() - beg
-#        answer_json = json.loads(answer)
-#        logger.success(f"query:'{query}' and user_id:'{user_id}' is processed successfully, the answer is {answer} \n-------\nthe total time_cost is {time_cost}\n-------\n")
-#
-#        # After generating the response from GPT
-#        # Store user query and GPT response in Redis
-#        history_key = f"user:{user_id}:history"
-#        history_data = {'query': query, 'answer': answer_json}
-#        redis_client.lpush(history_key, json.dumps(history_data))
-#        redis_client.ltrim(history_key, 0, MAX_HISTORY_QUERY_SIZE - 1)  # Keep only the latest N entries
-#        # Set the expiry time for the history key
-#        redis_client.expire(history_key, HISTORY_EXPIRE_TIME)
-#
-#        result = {
-#            'retcode': 0,
-#            'messge': 'success',
-#            'data': answer_json
-#        }
-#        return jsonify(result)
-#    except Exception as e:
-#        logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed, the exception is {e}")
-#        return jsonify({'retcode': -2, 'message': str(e), 'data': {}})
 
 
 @app.route('/open_kf_api/get_token', methods=['POST'])
@@ -912,8 +859,8 @@ def is_valid_url(url):
     parsed_url = urlparse(url)
     return bool(parsed_url.scheme) and bool(parsed_url.netloc)
 
-def start_crawl_link_task(site, version):
-    """Start the crawl task in an asyncio event loop."""
+def async_crawl_link_task(site, version):
+    """Start the crawl link task in an asyncio event loop."""
     logger.info(f"create crawler_link")
     crawler_link = AsyncCrawlerSiteLink(
         base_url=site,
@@ -922,9 +869,9 @@ def start_crawl_link_task(site, version):
         version=version,
         redis_lock=g_redis_lock
     )
-    logger.info(f"begin crawler_link")
+    logger.info(f"async_crawl_link_task begin, site:'{site}', version:{version}")
     asyncio.run(crawler_link.run())
-    logger.info(f"end crawler_link")
+    logger.info(f"async_crawl_link_task end, site:'{site}', version:{version}")
 
 @app.route('/open_kf_api/submit_crawl_site', methods=['POST'])
 @token_required
@@ -972,7 +919,7 @@ def submit_crawl_site():
                 g_redis_lock.release_lock()
 
         # Start the asynchronous crawl task
-        Thread(target=start_crawl_link_task, args=(site, timestamp)).start()
+        Thread(target=async_crawl_link_task, args=(site, timestamp)).start()
 
         return jsonify({'retcode': 0, 'message': 'Site submitted successfully for crawling.', 'data': {}})
     except Exception as e:
@@ -1077,11 +1024,17 @@ def get_crawl_url_list():
             conn.close()
 
 
-def start_add_content_task(domain, url_dict):
+def async_crawl_content_task(domain, url_dict, task_type):
     """
     Starts the asynchronous crawl and embedding process for a list of document IDs.
+
+    task_type:
+      1 - add_content
+      2 - delete_content
+      3 - update_content
     """
-    # Initialize the AsyncCrawlerSiteContent instance
+    """Start the crawl content task in an asyncio event loop."""
+    logger.info(f"create crawler_content")
     crawler_content = AsyncCrawlerSiteContent(
         domain=domain,
         sqlite_db_path=f"{SQLITE_DB_DIR}/{SQLITE_DB_NAME}",
@@ -1091,98 +1044,99 @@ def start_add_content_task(domain, url_dict):
         redis_lock=g_redis_lock
     )
     # Run the crawler
-    asyncio.run(crawler_content.add_content(url_dict))
+    logger.info(f"async_crawl_content_task begin!, url_dict:{url_dict}, task_type:{task_type}")
+    if task_type == 1:
+        asyncio.run(crawler_content.add_content(url_dict))
+    elif task_type == 2:
+        asyncio.run(crawler_content.delete_content(url_dict))
+    elif task_type == 3:
+        asyncio.run(crawler_content.update_content(url_dict))
+    logger.info(f"async_crawl_content_task end!, url_dict:{url_dict}, task_type:{task_type}")
+
+
+def check_crawl_content_task(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        data = request.json
+        id_list = data.get('id_list')
+
+        if not id_list or not isinstance(id_list, list) or len(id_list) == 0:
+            return jsonify({'retcode': -10000, 'message': 'Invalid or missing id_list parameter'})
+
+        conn = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("PRAGMA journal_mode=WAL;")
+
+            placeholders = ', '.join(['?'] * len(id_list))
+            cur.execute(f"SELECT id, url FROM t_raw_tab WHERE id IN ({placeholders})", id_list)
+            rows = cur.fetchall()
+
+            if len(rows) != len(id_list):
+                missing_ids = set(id_list) - set(row[0] for row in rows)
+                return jsonify({'retcode': -10009, 'message': f'The following ids do not exist: {missing_ids}', 'data': {}})
+
+            domain = urlparse(rows[0]["url"]).netloc
+            logger.info(f"domain is '{domain}'")
+            url_dict = {row["id"]: row["url"] for row in rows}
+
+            # Store domain and url_dict in request for further use
+            request.domain = domain
+            request.url_dict = url_dict
+
+            # Check and update domain_status in t_domain_tab
+            cur.execute("SELECT domain_status FROM t_domain_tab WHERE domain = ?", (domain,))
+            domain_info = cur.fetchone()
+            if domain_info and domain_info["domain_status"] < 3:
+                if g_redis_lock.acquire_lock():
+                    try:
+                        cur.execute("UPDATE t_domain_tab SET domain_status = 3, mtime = ? WHERE domain = ?", (int(time.time()), domain))
+                        conn.commit()
+                        logger.info(f"Updated domain_status to 3 for domain: '{domain}'")
+                    finally:
+                        g_redis_lock.release_lock()
+        except Exception as e:
+            return jsonify({'retcode': -10010, 'message': f'An error occurred: {str(e)}', 'data': {}})
+        finally:
+            if conn:
+                conn.close()
+        return f(*args, **kwargs)
+    return decorated_function
+
 
 @app.route('/open_kf_api/add_crawl_url_list', methods=['POST'])
 @token_required
+@check_crawl_content_task
 def add_crawl_url_list():
-    data = request.json
-    id_list = data.get('id_list')
+    domain = request.domain
+    url_dict = request.url_dict
+    # Use threading to avoid blocking the Flask application
+    Thread(target=async_crawl_content_task, args=(domain, url_dict, 1)).start()
+    return jsonify({'retcode': 0, 'message': 'Started processing the URL list.', 'data': {}})
 
-    if not id_list or not isinstance(id_list, list) or len(id_list) == 0:
-        return jsonify({'retcode': -10000, 'message': 'Invalid or missing id_list parameter'})
-
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL;")
-
-        placeholders = ', '.join(['?'] * len(id_list))
-        cur.execute(f"SELECT id, url FROM t_raw_tab WHERE id IN ({placeholders})", id_list)
-        rows = cur.fetchall()
-
-        if len(rows) != len(id_list):
-            missing_ids = set(id_list) - set(row[0] for row in rows)
-            return jsonify({'retcode': -10009, 'message': f'The following ids do not exist: {missing_ids}', 'data': {}})
-
-        domain = urlparse(rows[0]["url"]).netloc
-        logger.info(f"domain is '{domain}'")
-        url_dict = {row["id"]: row["url"] for row in rows}
-
-        # Use threading to avoid blocking the Flask application
-        Thread(target=start_add_content_task, args=(domain, url_dict)).start()
-
-        return jsonify({'retcode': 0, 'message': 'Started processing the URL list.', 'data': {}})
-    except Exception as e:
-        return jsonify({'retcode': -10010, 'message': f'An error occurred: {str(e)}', 'data': {}})
-    finally:
-        if conn:
-            conn.close()
-
-
-def start_delete_content_task(domain, url_dict):
-    """
-    Starts the asynchronous delete process for a list of document IDs.
-    """
-    # Initialize the AsyncCrawlerSiteContent instance
-    crawler_content = AsyncCrawlerSiteContent(
-        domain=domain,
-        sqlite_db_path=f"{SQLITE_DB_DIR}/{SQLITE_DB_NAME}",
-        max_requests=MAX_CRAWL_PARALLEL_REQUEST,
-        max_embedding_input=MAX_EMBEDDING_INPUT,
-        document_embedder_obj=g_document_embedder,
-        redis_lock=g_redis_lock
-    )
-    # Run the deletion process
-    asyncio.run(crawler_content.delete_content(url_dict))
 
 @app.route('/open_kf_api/delete_crawl_url_list', methods=['POST'])
 @token_required
+@check_crawl_content_task
 def delete_crawl_url_list():
-    data = request.json
-    id_list = data.get('id_list')
+    domain = request.domain
+    url_dict = request.url_dict
+    # Use threading to avoid blocking the Flask application
+    Thread(target=async_crawl_content_task, args=(domain, url_dict, 2)).start()
+    return jsonify({'retcode': 0, 'message': 'Started deleting the URL list embeddings.'})
 
-    if not id_list or not isinstance(id_list, list) or len(id_list) == 0:
-        return jsonify({'retcode': -10000, 'message': 'Invalid or missing id_list parameter'})
 
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL;")
+@app.route('/open_kf_api/update_crawl_url_list', methods=['POST'])
+@token_required
+@check_crawl_content_task
+def update_crawl_url_list():
+    domain = request.domain
+    url_dict = request.url_dict
+    # Use threading to avoid blocking the Flask application
+    Thread(target=async_crawl_content_task, args=(domain, url_dict, 3)).start()
+    return jsonify({'retcode': 0, 'message': 'Started updating the URL list embeddings.'})
 
-        placeholders = ', '.join(['?'] * len(id_list))
-        cur.execute(f"SELECT id, url FROM t_raw_tab WHERE id IN ({placeholders})", id_list)
-        rows = cur.fetchall()
-
-        if len(rows) != len(id_list):
-            missing_ids = set(id_list) - set(row[0] for row in rows)
-            return jsonify({'retcode': -10009, 'message': f'The following ids do not exist: {missing_ids}'})
-
-        domain = urlparse(rows[0]["url"]).netloc
-        logger.info(f"domain is '{domain}'")
-        url_dict = {row["id"]: row["url"] for row in rows}
-
-        # Use threading to avoid blocking the Flask application
-        Thread(target=start_delete_content_task, args=(domain, url_dict)).start()
-
-        return jsonify({'retcode': 0, 'message': 'Started deleting the URL list embeddings.'})
-    except Exception as e:
-        return jsonify({'retcode': -10010, 'message': f'An error occurred: {str(e)}'})
-    finally:
-        if conn:
-            conn.close()
 
 
 if __name__ == '__main__':
