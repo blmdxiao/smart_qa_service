@@ -868,9 +868,9 @@ def async_crawl_link_task(site, version):
         version=version,
         redis_lock=g_redis_lock
     )
-    logger.info(f"async_crawl_link_task begin, site:'{site}', version:{version}")
+    logger.info(f"async_crawl_link_task begin!, site:'{site}', version:{version}")
     asyncio.run(crawler_link.run())
-    logger.info(f"async_crawl_link_task end, site:'{site}', version:{version}")
+    logger.info(f"async_crawl_link_task end!, site:'{site}', version:{version}")
 
 @app.route('/open_kf_api/submit_crawl_site', methods=['POST'])
 @token_required
@@ -1021,7 +1021,7 @@ def async_crawl_content_task(domain, url_dict, task_type):
     """
 
     """Start the crawl content task in an asyncio event loop."""
-    logger.info(f"create crawler_content")
+    logger.info(f"async_crawl_content_task begin! domain:'{domain}', url_dict:{url_dict}, task_type:{task_type}")
     crawler_content = AsyncCrawlerSiteContent(
         domain=domain,
         sqlite_db_path=f"{SQLITE_DB_DIR}/{SQLITE_DB_NAME}",
@@ -1030,16 +1030,15 @@ def async_crawl_content_task(domain, url_dict, task_type):
         document_embedder_obj=g_document_embedder,
         redis_lock=g_redis_lock
     )
+
     # Run the crawler
-    logger.info(f"async_crawl_content_task begin!, url_dict:{url_dict}, task_type:{task_type}")
     if task_type == 1:
         asyncio.run(crawler_content.add_content(url_dict))
     elif task_type == 2:
         asyncio.run(crawler_content.delete_content(url_dict))
     elif task_type == 3:
         asyncio.run(crawler_content.update_content(url_dict))
-    logger.info(f"async_crawl_content_task end!, url_dict:{url_dict}, task_type:{task_type}")
-
+    logger.info(f"async_crawl_content_task end!, domain:'{domain}', task_type:{task_type}")
 
 def check_crawl_content_task(f):
     @wraps(f)
