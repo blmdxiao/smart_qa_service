@@ -187,11 +187,12 @@ class AsyncCrawlerSiteLink:
             self.visited_urls.add(self.base_url)
             await self.crawl_link(session, self.base_url)
 
-        # Process the remaining urls in batch_urls_queue
         if self.batch_urls_queue.qsize() > 0:
+            # Process the remaining urls in batch_urls_queue
             batch_urls = []
             while not self.batch_urls_queue.empty():
                 batch_urls.append(await self.batch_urls_queue.get())
+            logger.info(f"[CRAW_LINK process the remaining urls:{batch_urls} in batch_urls_queue")
 
             existing_urls, new_urls = await self.check_urls_existence(batch_urls)
             await self.update_and_insert_urls(existing_urls, new_urls)
