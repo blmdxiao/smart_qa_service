@@ -171,7 +171,7 @@ class AsyncCrawlerSiteContent:
         """
         Handle the processing of updated contents including deleting old embeddings, inserting new ones, and updating database records in batch.
         """
-        logger.info(f"[CRAWL_CONTENT] process_updated_contents, updated_contents:{updated_contents}, url_dict:{url_dict}")
+        logger.info(f"[CRAWL_CONTENT] process_updated_contents, url_dict:{url_dict}")
         # Delete old embeddings
         doc_id_list = list(updated_contents.keys())
         await self.delete_embedding_doc(doc_id_list)
