@@ -73,6 +73,12 @@ def token_required(f):
             return jsonify({'retcode': -10000, 'message': 'Token is missing!', 'data': {}})
         try:
             user_payload = TokenHelper.verify_token(token)
+            if user_payload == 'Token expired':
+                logger.error(f"Token: '{token}' is expired!")
+                return jsonify({'retcode': -10001, 'message': 'Token is expired!', 'data': {}})
+            elif user_payload == 'Invalid token':
+                logger.error(f"Token: '{token}' is invalid")
+                return jsonify({'retcode': -10001, 'message': 'Token is invalid!', 'data': {}})
             request.user_payload = user_payload  # Store payload in request for further use
         except Exception as e:
             logger.error(f"Token: '{token}' is invalid, the exception is {e}")
