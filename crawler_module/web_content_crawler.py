@@ -123,12 +123,15 @@ class AsyncCrawlerSiteContent:
         """
         logger.info(f"[CRAWL_CONTENT] fetch_existing_contents, doc_id_list:{doc_id_list}")
         query = "SELECT id, content FROM t_raw_tab WHERE id IN ({})".format(', '.join('?' for _ in doc_id_list))
+        logger.info(f"query:{query}")
+        logger.info(f"doc_id_list:{doc_id_list}")
         async with aiosqlite.connect(self.sqlite_db_path) as db:
             # Enable WAL mode for better concurrency
             await db.execute("PRAGMA journal_mode=WAL;")
 
             cursor = await db.execute(query, doc_id_list)
             results = await cursor.fetchall()
+            logger.info(f"results:{results}")
             return dict(results)
 
     def compare_contents(self, existing_contents, fetched_contents):
@@ -141,14 +144,14 @@ class AsyncCrawlerSiteContent:
         """
         logger.info(f"[CRAWL_CONTENT] compare_contents")
         updated_contents = {}
-        unchanged_doc_ids = set()
+        unchanged_doc_ids = []
         for doc_id, chunk_text_vec in fetched_contents.items():
             new_content = json.dumps(chunk_text_vec)
             old_content = existing_contents.get(doc_id)
             if new_content != old_content:
                 updated_contents[doc_id] = chunk_text_vec
             else:
-                unchanged_doc_ids.add(doc_id)
+                unchanged_doc_ids.append(doc_id)
         return updated_contents, unchanged_doc_ids
 
     async def compare_and_update_contents(self, url_dict, fetched_contents):
@@ -169,9 +172,34 @@ class AsyncCrawlerSiteContent:
 
     async def process_updated_contents(self, updated_contents, url_dict):
         """
-        Handle the processing of updated contents including deleting old embeddings, inserting new ones, and updating database records in batch.
+        Handle the processing of updated contents including updating the content details in the database,
+        deleting old embeddings, inserting new ones, and finally updating database records in batch.
         """
-        logger.info(f"[CRAWL_CONTENT] process_updated_contents, url_dict:{url_dict}")
+        logger.info(f"[CRAWL_CONTENT] process_updated_contents, updating {len(updated_contents)} items.")
+        # Prepare update queries for updating content details in t_raw_tab
+        content_update_queries = []
+        timestamp = int(time.time())
+        for doc_id, chunk_text_vec in updated_contents.items():
+            content_json = json.dumps(chunk_text_vec)
+            content_length = len(content_json)
+            content_update_queries.append((content_json, content_length, 3, timestamp, doc_id))
+
+        # Lock to ensure database operations are atomic
+        if await self.redis_lock.aacquire_lock():
+            try:
+                async with aiosqlite.connect(self.sqlite_db_path) as db:
+                    # Enable WAL mode for better concurrency
+                    await db.execute("PRAGMA journal_mode=WAL;")
+
+                    # Update content details in t_raw_tab
+                    await db.executemany(
+                        "UPDATE t_raw_tab SET content = ?, content_length = ?, doc_status = ?, mtime = ? WHERE id = ?",
+                        content_update_queries
+                    )
+                    await db.commit()
+            finally:
+                await self.redis_lock.arelease_lock()
+
         # Delete old embeddings
         doc_id_list = list(updated_contents.keys())
         await self.delete_embedding_doc(doc_id_list)
@@ -229,7 +257,7 @@ class AsyncCrawlerSiteContent:
         await self.check_and_update_domain_status()
         end_time = int(time.time())
         timecost = end_time - begin_time
-        logger.info("[CRAWL_CONTENT] add_content end!, end_time:{end_time}, timecost:{timecost}")
+        logger.info(f"[CRAWL_CONTENT] add_content end!, end_time:{end_time}, timecost:{timecost}")
 
     async def process_add_batch(self, batch):
         """Process a single batch of URLs for add."""
