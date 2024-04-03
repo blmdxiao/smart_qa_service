@@ -123,15 +123,12 @@ class AsyncCrawlerSiteContent:
         """
         logger.info(f"[CRAWL_CONTENT] fetch_existing_contents, doc_id_list:{doc_id_list}")
         query = "SELECT id, content FROM t_raw_tab WHERE id IN ({})".format(', '.join('?' for _ in doc_id_list))
-        logger.info(f"query:{query}")
-        logger.info(f"doc_id_list:{doc_id_list}")
         async with aiosqlite.connect(self.sqlite_db_path) as db:
             # Enable WAL mode for better concurrency
             await db.execute("PRAGMA journal_mode=WAL;")
 
             cursor = await db.execute(query, doc_id_list)
             results = await cursor.fetchall()
-            logger.info(f"results:{results}")
             return dict(results)
 
     def compare_contents(self, existing_contents, fetched_contents):
