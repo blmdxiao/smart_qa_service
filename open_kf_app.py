@@ -44,7 +44,7 @@ app = Flask(__name__)
 
 
 # Initialize Redis distributed lock
-g_redis_lock = RedisLock(redis_client, 'my_sqlite_lock')
+g_redis_lock = RedisLock(redis_client, 'open_kf:distributed_lock')
 
 # Set OpenAI GPT API key
 g_client = OpenAI(api_key=OPENAI_API_KEY)
