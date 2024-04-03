@@ -70,7 +70,7 @@ class AsyncCrawlerSiteContent:
                     if element_text:
                         element_len = len(element_text)
                         if element_len > max_token_len:
-                            logger.warn(f"[CRAWL_CONTENG] parse_conteng, url:'{url}', warning element_len={element_len}")
+                            logger.warning(f"[CRAWL_CONTENG] parse_conteng, url:'{url}', warning element_len={element_len}")
 
                         if curr_len + element_len <= max_token_len:
                             curr_chunk += element_text
