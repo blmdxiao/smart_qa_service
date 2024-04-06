@@ -1,6 +1,6 @@
 SQLITE_DB_DIR = "sqlite_dir"
 SQLITE_DB_NAME = "mydatabase.sqlite3"
-MAX_CRAWL_PARALLEL_REQUEST = 5
+MAX_CRAWL_PARALLEL_REQUEST = 10
 CHROMA_DB_DIR = "chroma_dir"
 CHROMA_COLLECTION_NAME = "mychroma_collection"
 OPENAI_API_KEY = "xxxx"
@@ -12,3 +12,6 @@ MAX_HISTORY_QUERY_SIZE = 5
 HISTORY_EXPIRE_TIME = 10800
 MAX_EMBEDDING_INPUT = 2048
 SITE_TITLE = "your site title"
+STATIC_DIR = "/tmp/nginx_static_dir"
+URL_PREFIX = "https://www.xxx.com/"
+MEDIA_DIR = "open_kf_media_dir"

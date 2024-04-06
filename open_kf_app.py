@@ -7,11 +7,13 @@ import sqlite3
 from threading import Thread
 import time
 from urllib.parse import urljoin, urlparse
+import uuid
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from langchain.embeddings.openai import OpenAIEmbeddings
 from openai import OpenAI
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 from utils.redis_config import redis_client
 from utils.redis_lock import RedisLock
 from utils.token_helper import TokenHelper
@@ -39,6 +41,9 @@ MAX_QUERY_SIZE = int(os.getenv('MAX_QUERY_SIZE', '200'))
 RECALL_TOP_K = int(os.getenv('RECALL_TOP_K', '3'))
 MAX_HISTORY_QUERY_SIZE = int(os.getenv('MAX_HISTORY_QUERY_SIZE', '5'))
 HISTORY_EXPIRE_TIME = int(os.getenv('HISTORY_EXPIRE_TIME', '10800'))
+STATIC_DIR = os.getenv('STATIC_DIR', 'your_static_dir')
+URL_PREFIX = os.getenv('URL_PREFIX', 'your_url_prefix')
+MEDIA_DIR = os.getenv('MEDIA_DIR', 'your_media_dir')
 
 
 app = Flask(__name__)
@@ -93,7 +98,7 @@ def get_db_connection():
     return conn
 
 def get_user_query_history(user_id):
-    history_key = f"user:{user_id}:history"
+    history_key = f"open_kf:query_history:{user_id}"
     history_items = redis_client.lrange(history_key, 0, -1)
     history = [json.loads(item) for item in history_items]
     return history
@@ -215,7 +220,7 @@ def smart_query():
 
     try:
         # Check if the query is in Redis
-        redis_key = f"intervene:{query}"
+        redis_key = f"open_kf:intervene:{query}"
         intervene_data = redis_client.get(redis_key)
         if intervene_data:
             # If found in Redis, parse the JSON data and return it
@@ -247,7 +252,7 @@ def smart_query():
     try:
         # After generating the response from GPT
         # Store user query and GPT response in Redis
-        history_key = f"user:{user_id}:history"
+        history_key = f"open_kf:query_history:{user_id}"
         history_data = {'query': query, 'answer': answer_json}
         redis_client.lpush(history_key, json.dumps(history_data))
         redis_client.ltrim(history_key, 0, MAX_HISTORY_QUERY_SIZE - 1)  # Keep only the latest N entries
@@ -281,25 +286,79 @@ def smart_query():
     return jsonify({"retcode": 0, "message": "success", "data": answer_json})
 
 
-@app.route('/open_kf_api/get_user_query_history_list', methods=['POST'])
+@app.route('/open_kf_api/get_user_conversation_list', methods=['POST'])
 @token_required
-def get_user_query_history_list():
+def get_user_conversation_list():
+    """Retrieve a list of user conversations within a specified time range, with pagination and total count."""
     data = request.json
     start_timestamp = data.get('start_timestamp')
     end_timestamp = data.get('end_timestamp')
     page = data.get('page')
     page_size = data.get('page_size')
-    user_id = data.get('user_id', None)  # user_id is optional
+
+    if None in ([start_timestamp, end_timestamp, page, page_size]):
+        return jsonify({'retcode': -10002, 'message': 'Missing required parameters'})
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        offset = (page - 1) * page_size
+
+        # First, get the total count of distinct user_ids within the time range for pagination
+        cur.execute("""
+            SELECT COUNT(DISTINCT user_id) AS total_count FROM t_user_qa_record_tab
+            WHERE ctime BETWEEN ? AND ?
+        """, (start_timestamp, end_timestamp))
+        total_count = cur.fetchone()['total_count']
+
+        # Then, fetch the most recent conversation record for each distinct user within the time range
+        cur.execute(f"""
+            WITH RankedConversations AS (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY ctime DESC) AS rn
+                FROM t_user_qa_record_tab
+                WHERE ctime BETWEEN ? AND ?
+            )
+            SELECT * FROM RankedConversations WHERE rn = 1
+            ORDER BY ctime DESC
+            LIMIT ? OFFSET ?
+        """, (start_timestamp, end_timestamp, page_size, offset))
+
+        conversation_list = [{
+            "user_id": row["user_id"],
+            "latest_query": {
+                "id": row["id"],
+                "query": row["query"],
+                "answer": row["answer"],
+                "source": json.loads(row["source"]),
+                "ctime": row["ctime"],
+                "mtime": row["mtime"]
+            }
+        } for row in cur.fetchall()]
+
+        return jsonify({'retcode': 0, 'message': 'Success', 'data': {'total_count': total_count, 'conversation_list': conversation_list}})
+    except Exception as e:
+        logger.error(f"Failed to retrieve user conversation list: {e}")
+        return jsonify({'retcode': -10003, 'message': 'Internal server error'})
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/open_kf_api/get_user_query_history_list', methods=['POST'])
+@token_required
+def get_user_query_history_list():
+    data = request.json
+    page = data.get('page')
+    page_size = data.get('page_size')
+    user_id = data.get('user_id')
 
     # Check for mandatory parameters
-    if None in (start_timestamp, end_timestamp, page, page_size):
-        logger.error("start_timestamp, end_timestamp, page, and page_size are required")
-        return jsonify({'retcode': -20000, 'message': 'start_timestamp, end_timestamp, page, and page_size are required', 'data': {}})
+    if None in (page, page_size, user_id):
+        logger.error("page, page_size and user_id are required")
+        return jsonify({'retcode': -20000, 'message': 'page, page_size and user_id are required', 'data': {}})
 
     try:
         # Convert timestamps and pagination parameters to integers
-        start_timestamp = int(start_timestamp)
-        end_timestamp = int(end_timestamp)
         page = int(page)
         page_size = int(page_size)
     except ValueError as e:
@@ -307,24 +366,21 @@ def get_user_query_history_list():
         return jsonify({'retcode': -20001, 'message': 'Invalid parameters', 'data': {}})
 
     # Build query conditions
-    query_conditions = "WHERE ctime BETWEEN ? AND ?"
-    params = [start_timestamp, end_timestamp]
-    if user_id:
-        query_conditions += " AND user_id = ?"
-        params.append(user_id)
-    
+    query_conditions = "WHERE user_id = ?"
+    params = [user_id]
+
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL;")
-        
+
         # First, query the total count of records under the given conditions
         cur.execute(f'SELECT COUNT(*) FROM t_user_qa_record_tab {query_conditions}', params)
         total_count = cur.fetchone()[0]
 
         # Then, query the paginated records
-        cur.execute(f'SELECT * FROM t_user_qa_record_tab {query_conditions} ORDER BY ctime DESC LIMIT ? OFFSET ?', 
+        cur.execute(f'SELECT * FROM t_user_qa_record_tab {query_conditions} ORDER BY ctime DESC LIMIT ? OFFSET ?',
                     params + [page_size, (page-1) * page_size])
         rows = cur.fetchall()
 
@@ -391,7 +447,7 @@ def add_intervene_record():
                 g_redis_lock.release_lock()
 
         # Update Redis using simple string with the query as the key (prefixed)
-        redis_key = f"intervene:{query}"
+        redis_key = f"open_kf:intervene:{query}"
         redis_value = json.dumps({"answer": intervene_answer, "source": source})
         redis_client.set(redis_key, redis_value)
 
@@ -433,7 +489,7 @@ def delete_intervene_record():
                     g_redis_lock.release_lock()
 
             # Now, delete the corresponding record from Redis
-            redis_key = f"intervene:{query}"
+            redis_key = f"open_kf:intervene:{query}"
             redis_client.delete(redis_key)
 
             return jsonify({"retcode": 0, "message": "success", 'data': {}})
@@ -467,7 +523,7 @@ def batch_delete_intervene_record():
 
         for row in rows:
             query = row['query']
-            redis_key = f"intervene:{query}"
+            redis_key = f"open_kf:intervene:{query}"
             redis_client.delete(redis_key)  # Delete from Redis
 
         # Then, batch delete from DB
@@ -519,7 +575,7 @@ def update_intervene_record():
         row = cur.fetchone()
         if row:
             query = row['query']
-            redis_key = f"intervene:{query}"
+            redis_key = f"open_kf:intervene:{query}"
             redis_value = json.dumps({"answer": intervene_answer, "source": source})
             redis_client.set(redis_key, redis_value)  # Update Redis
         else:
@@ -596,41 +652,6 @@ def get_intervene_query_list():
         })
     except Exception as e:
         return jsonify({'retcode': -30000, 'message': 'Database error', 'data': {}})
-    finally:
-        if conn:
-            conn.close()
-
-
-@app.route('/open_kf_api/add_account', methods=['POST'])
-def add_account():
-    data = request.json
-    account_name = data.get('account_name')
-    password = data.get('password')
-
-    if not account_name or not password:
-        return jsonify({'retcode': -10000, 'message': 'Account name and password are required', 'data': {}})
-
-    password_hash = generate_password_hash(password, method='pbkdf2:sha256', salt_length=10)
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL;")
-
-        # Check if the account name already exists
-        cur.execute('SELECT id FROM t_account_tab WHERE account_name = ?', (account_name,))
-        account = cur.fetchone()
-        if account:
-            return jsonify({'retcode': -20000, 'message': 'Account name already exists', 'data': {}})
-
-        timestamp = int(time.time())
-        # Insert the new account record
-        cur.execute('INSERT INTO t_account_tab (account_name, password_hash, is_login, ctime, mtime) VALUES (?, ?, ?, ?, ?)',
-                    (account_name, password_hash, 0, timestamp, timestamp))
-        conn.commit()
-        return jsonify({'retcode': 0, 'message': 'Account created successfully', 'data': {}})
-    except Exception as e:
-        return jsonify({'retcode': -30001, 'message': f'Error occurred while creating account, exception:{e}', 'data': {}})
     finally:
         if conn:
             conn.close()
@@ -725,62 +746,23 @@ def update_password():
             conn.close()
 
 
-@app.route('/open_kf_api/init_bot_setting', methods=['POST'])
-@token_required
-def init_bot_setting():
-    data = request.json
-    # Extracting the required fields from request data
-    initial_messages = data.get('initial_messages')
-    suggested_messages = data.get('suggested_messages')
-    bot_name = data.get('bot_name')
-    bot_avatar = data.get('bot_avatar')
-    chat_icon = data.get('chat_icon')
-    placeholder = data.get('placeholder')
-    model = data.get('model')
-
-    # Ensure all required fields are provided
-    if None in (initial_messages, suggested_messages, bot_name, bot_avatar, chat_icon, placeholder, model):
-        return jsonify({'retcode': -10004, 'message': 'All fields are required', 'data': {}})
-
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL;")
-
-        # Check if the setting table is empty
-        cur.execute('SELECT COUNT(*) FROM t_bot_setting_tab')
-        if cur.fetchone()[0] > 0:
-            logger.error(f"the setting table is not empty! ")
-            return jsonify({'retcode': -10007, 'message': 'Settings already initialized', 'data': {}})
-
-        timestamp = int(time.time())
-        # Insert new setting
-        if g_redis_lock.acquire_lock():
-            try:
-                cur.execute('''
-                    INSERT INTO t_bot_setting_tab (initial_messages, suggested_messages, bot_name, bot_avatar, chat_icon, placeholder, model, ctime, mtime)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    json.dumps(initial_messages), 
-                    json.dumps(suggested_messages), 
-                    bot_name, bot_avatar, chat_icon, placeholder, model, 
-                    timestamp, timestamp)
-                )
-                conn.commit()
-            finally:
-                g_redis_lock.release_lock()
-        return jsonify({'retcode': 0, 'message': 'Settings initialized successfully', 'data': {}})
-    except Exception as e:
-        return jsonify({'retcode': -10006, 'message': f'An error occurred: {str(e)}', 'data': {}})
-    finally:
-        if conn:
-            conn.close()
-
-
 @app.route('/open_kf_api/get_bot_setting', methods=['POST'])
 def get_bot_setting():
-    """Retrieve bot setting."""
+    """Retrieve bot setting, first trying Redis and falling back to DB if not found."""
+    try:
+        # Attempt to retrieve the setting from Redis
+        redis_key = "open_kf:bot_setting"
+        setting_redis = redis_client.get(redis_key)
+        if setting_redis:
+            setting_data = json.loads(setting_redis)
+            return jsonify({'retcode': 0, 'message': 'Success', 'data': {'config': setting_data}})
+        else:
+            logger.warning(f"could not find '{redis_key}' in Redis!")
+    except Exception as e:
+        logger.error(f"Error retrieving setting from Redis, excpetion:{e}")
+        # Just ignore Redis error
+        #return jsonify({'retcode': -10006, 'message': f'An error occurred: {str(e)}', 'data': {}})
+
     conn = None
     try:
         conn = get_db_connection()
@@ -795,7 +777,7 @@ def get_bot_setting():
             setting_data = {k: json.loads(v) if k in ['initial_messages', 'suggested_messages'] else v for k, v in setting.items()}
             return jsonify({'retcode': 0, 'message': 'Success', 'data': {'config': setting_data}})
         else:
-            logger.error(f"No setting found")
+            logger.warning(f"No setting found")
             return jsonify({'retcode': -10008, 'message': 'No setting found', 'data': {}})
     except Exception as e:
         logger.error(f"Error retrieving setting: {e}")
@@ -1131,6 +1113,32 @@ def update_crawl_url_list():
     Thread(target=async_crawl_content_task, args=(domain, url_dict, 3)).start()
     return jsonify({'retcode': 0, 'message': 'Started updating the URL list embeddings.'})
 
+
+@app.route('/open_kf_api/upload_picture', methods=['POST'])
+@token_required
+def upload_picture():
+    picture_file = request.files.get('picture_file')
+    if not picture_file:
+        logger.error("Missing required parameters picture_file")
+        return jsonify({'retcode': -10001, 'message': 'Missing required parameters picture_file', data:{}})
+
+    try:
+        original_filename = secure_filename(picture_file.filename)
+        extension = os.path.splitext(original_filename)[1]
+        new_filename = f"open_kf_{uuid.uuid4()}{extension}"
+
+        save_directory = f"{STATIC_DIR}/{MEDIA_DIR}/"
+        if not os.path.exists(save_directory):
+            logger.error(f"save_directory:'{save_directory} does not exist!")
+            return jsonify({'retcode': -20001, 'message': 'save_directory does not exitst!', 'data':{}})
+        image_path = os.path.join(save_directory, new_filename)
+        picture_file.save(image_path)
+
+        picture_url  = f"{URL_PREFIX}{MEDIA_DIR}/{new_filename}"
+        return jsonify({'retcode': 0, 'message': 'upload picture success', 'data': {'picture_url': picture_url}})
+    except Exception as e:
+        logger.error(f"An error occureed: {str(e)}")
+        return jsonify({'retcode': -20002, 'message': f'An error occurred: {str(e)}', 'data': {}})
 
 
 if __name__ == '__main__':
