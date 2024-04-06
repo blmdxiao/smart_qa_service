@@ -105,15 +105,13 @@ def get_user_query_history(user_id):
 
 def search_and_answer(query, user_id, k=RECALL_TOP_K):
     # Perform similarity search
-    t1 = time.time()
-    #results = g_chroma.similarity_search_with_relevance_scores(query, k=k)
-    #results = g_chroma.similarity_search_with_score(query, k=k)
+    beg = time.time()
     results = g_document_embedder.search_document(query, k)
-    time_cost1 = time.time() - t1
-    logger.info(f"for the query:'{query}' and user_id:'{user_id}, the top {k} results are: {results} \n*******\nthe time_cost of similarity_search_with_score is {time_cost1}\n*******\n")
+    timecost1 = time.time() - beg
+    #logger.info(f"for the query:'{query}' and user_id:'{user_id}, the top {k} results are: {results}\nthe timecost of similarity_search_with_score is {timecost1}\n")
 
     # Build the prompt for GPT
-    context = "\n\n".join([f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
+    context = "\n********************\n".join([f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
 
     # Get user history from Redis
     user_history = get_user_query_history(user_id)
@@ -242,9 +240,9 @@ def smart_query():
     try:
         beg = time.time()
         answer = search_and_answer(query, user_id)
-        time_cost = time.time() - beg
+        timecost = time.time() - beg
         answer_json = json.loads(answer)
-        logger.success(f"query:'{query}' and user_id:'{user_id}' is processed successfully, the answer is {answer} \n-------\nthe total time_cost is {time_cost}\n-------\n")
+        logger.success(f"query:'{query}' and user_id:'{user_id}' is processed successfully, the answer is {answer}\nthe total timecost is {timecost}\n")
     except Exception as e:
         logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed, the exception is {e}")
         return jsonify({'retcode': -20000, 'message': str(e), 'data': {}})
