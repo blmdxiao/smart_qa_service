@@ -242,6 +242,7 @@ def smart_query():
         answer = search_and_answer(query, user_id)
         timecost = time.time() - beg
         answer_json = json.loads(answer)
+        answer_json["source"] = list(dict.fromkeys(answer_json["source"]))
         logger.success(f"query:'{query}' and user_id:'{user_id}' is processed successfully, the answer is {answer}\nthe total timecost is {timecost}\n")
     except Exception as e:
         logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed, the exception is {e}")
