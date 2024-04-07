@@ -62,9 +62,9 @@ g_embeddings = OpenAIEmbeddings(
 )
 
 g_document_embedder = DocumentEmbedder(
-    persist_directory=CHROMA_DB_DIR,
+    collection_name=CHROMA_COLLECTION_NAME,
     embedding_function=g_embeddings,
-    collection_name=CHROMA_COLLECTION_NAME
+    persist_directory=CHROMA_DB_DIR
 )
 
 
@@ -111,7 +111,7 @@ def search_and_answer(query, user_id, k=RECALL_TOP_K):
     #logger.info(f"for the query:'{query}' and user_id:'{user_id}, the top {k} results are: {results}\nthe timecost of similarity_search_with_score is {timecost1}\n")
 
     # Build the prompt for GPT
-    context = "\n********************\n".join([f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
+    context = "\n--------------------\n".join([f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
 
     # Get user history from Redis
     user_history = get_user_query_history(user_id)
@@ -131,21 +131,21 @@ def search_and_answer(query, user_id, k=RECALL_TOP_K):
 
     The goal is to assist users in retrieving information specific to the '{site_title}' website's offerings and documentation. Therefore, when generating a response, consider the user's actual application scenario and the intent behind their query, as well as any relevant history from their previous queries. Ensure that the response is informative, directly related to the query, and based on the documents provided as context.
 
-    **It is crucial to provide responses that are as detailed and comprehensive as possible.** When the query indicates a need for specific information, such as URLs, steps, or example code, **the response should aim to include all such details**. Use the context from the top recalled documents and any relevant history to form a thorough answer, leveraging any available specifics to enhance the relevance and usefulness of the response.
+    It is crucial to provide responses that are as detailed and comprehensive as possible. When the query indicates a need for specific information, such as URLs, steps, or example code, the response should aim to include all such details. Use the context from the top recalled documents and any relevant history to form a thorough answer, leveraging any available specifics to enhance the relevance and usefulness of the response.
 
-    Additionally, **if the query's true intent seems to extend beyond the literal question asked, strive to address the underlying need or interest,** possibly hinted at in their query history. This means not only answering the direct question but also providing additional information that could be helpful to the user based on the context and intent of the query, as well as their past interactions.
+    Additionally, if the query's true intent seems to extend beyond the literal question asked, strive to address the underlying need or interest, possibly hinted at in their query history. This means not only answering the direct question but also providing additional information that could be helpful to the user based on the context and intent of the query, as well as their past interactions.
 
-    When generating code snippets or examples, **it is essential to ensure the code is not only correct but also well-formatted, with proper indentation and spacing for enhanced readability and adherence to coding standards.** This helps users easily understand and apply the code within their own projects.
+    When generating code snippets or examples, it is essential to ensure the code is not only correct but also well-formatted, with proper indentation and spacing for enhanced readability and adherence to coding standards. This helps users easily understand and apply the code within their own projects.
 
     Given the information from the documents listed below and user's query history, please formulate a detailed and specific answer to the query in the same language as the query. Your response should be in JSON format, containing 'answer' and 'source' fields. The 'answer' field must include a precise and informative response based on the document contents, matching the language of the query, and considering any relevant user history. The 'source' field should list the URLs of the documents that directly support your answer. If the documents do not provide sufficient information for a definitive answer, please indicate that the answer is unknown in the 'answer' field.
 
-    **Documents:**
+    Documents:
     {context}
 
-    **User History:**
+    User History:
     {history_context}
 
-    **Query:**
+    Query:
     '{query}'
 
     Instructions for response:
@@ -155,7 +155,7 @@ def search_and_answer(query, user_id, k=RECALL_TOP_K):
     - Respond in a manner that considers the user's intent and the practical application of the query, addressing not just the literal question but also the broader context, potential needs, and past queries.
     - When providing code examples, ensure the code is correct and follows best practices for formatting and indentation to promote readability and maintainability.
     - Avoid speculative or general responses not supported by the document contents or the user's query history.
-    - **Respond in a manner that aligns with the query's language (e.g., if the query is in Chinese, respond in Chinese; if in English, respond in English; and so on for other languages)**.
+    - Respond in a manner that aligns with the query's language (e.g., if the query is in Chinese, respond in Chinese; if in English, respond in English; and so on for other languages).
 
     Please format your response as follows:
     {{

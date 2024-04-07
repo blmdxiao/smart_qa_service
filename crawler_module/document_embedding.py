@@ -8,9 +8,9 @@ from utils.logger_config import my_logger as logger
 
 class DocumentEmbedder:
 
-    def __init__(self, persist_directory, embedding_function, collection_name):
-        logger.info(f"[DOC_EMBEDDING] init, persist_directory:'{persist_directory}', collection_name:{collection_name}")
-        self.chroma_obj = Chroma(persist_directory=persist_directory, embedding_function=embedding_function, collection_name=collection_name)
+    def __init__(self, collection_name, embedding_function, persist_directory):
+        logger.info(f"[DOC_EMBEDDING] init, collection_name:'{collection_name}', persist_directory:{persist_directory}")
+        self.chroma_obj = Chroma(collection_name=collection_name, embedding_function=embedding_function, persist_directory=persist_directory)
 
     async def aadd_content_embedding(self, data):
         records_to_add = []
