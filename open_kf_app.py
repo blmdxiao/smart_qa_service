@@ -378,7 +378,7 @@ def get_user_query_history_list():
         total_count = cur.fetchone()[0]
 
         # Then, query the paginated records
-        cur.execute(f'SELECT * FROM t_user_qa_record_tab {query_conditions} ORDER BY ctime DESC LIMIT ? OFFSET ?',
+        cur.execute(f'SELECT * FROM t_user_qa_record_tab {query_conditions} ORDER BY id LIMIT ? OFFSET ?',
                     params + [page_size, (page-1) * page_size])
         rows = cur.fetchall()
 

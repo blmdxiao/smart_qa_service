@@ -202,9 +202,10 @@ def init_bot_setting():
         else:
             timestamp = int(time.time())
             cur.execute('''
-                INSERT INTO t_bot_setting_tab (initial_messages, suggested_messages, bot_name, bot_avatar, chat_icon, placeholder, model, ctime, mtime)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO t_bot_setting_tab (id, initial_messages, suggested_messages, bot_name, bot_avatar, chat_icon, placeholder, model, ctime, mtime)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
+                1,
                 json.dumps(initial_messages),
                 json.dumps(suggested_messages),
                 bot_name, bot_avatar, chat_icon, placeholder, model,
@@ -216,6 +217,7 @@ def init_bot_setting():
             try:
                 key = "open_kf:bot_setting"
                 bot_setting = {
+                    'id': 1,
                     'initial_messages': initial_messages,
                     'suggested_messages': suggested_messages,
                     'bot_name': bot_name,
