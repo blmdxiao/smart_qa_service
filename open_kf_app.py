@@ -233,9 +233,9 @@ def smart_query():
     if len(query) > MAX_QUERY_SIZE:
         query = query[:MAX_QUERY_SIZE]
 
-    last_character = query[-1]
-    if last_character != "？" and last_character != "?":
-        query += "?"
+    #last_character = query[-1]
+    #if last_character != "？" and last_character != "?":
+    #    query += "?"
 
     try:
         beg = time.time()
@@ -773,6 +773,15 @@ def get_bot_setting():
             setting = dict(setting)
             # Process and return the setting details
             setting_data = {k: json.loads(v) if k in ['initial_messages', 'suggested_messages'] else v for k, v in setting.items()}
+
+            # Add bot setting into Redis
+            try:
+                key = "open_kf:bot_setting"
+                redis_client.set(key, json.dumps(setting_data))
+            except Exception as e:
+                logger.error(f" add bot setting into Redis is failed, the exception is {e}")
+                # Just ignore Reids error
+
             return jsonify({'retcode': 0, 'message': 'Success', 'data': {'config': setting_data}})
         else:
             logger.warning(f"No setting found")
@@ -788,9 +797,7 @@ def get_bot_setting():
 @app.route('/open_kf_api/update_bot_setting', methods=['POST'])
 @token_required
 def update_bot_setting():
-    # Retrieve request data
     data = request.json
-
     # Extract and validate all required fields
     setting_id = data.get('id')
     initial_messages = data.get('initial_messages')
@@ -821,20 +828,42 @@ def update_bot_setting():
         initial_messages_json = json.dumps(initial_messages)
         suggested_messages_json = json.dumps(suggested_messages)
 
-        # Update the setting
+        # Update bot setting in DB
+        timestamp = int(time.time())
         if g_redis_lock.acquire_lock():
             try:
                 cur.execute('''
                     UPDATE t_bot_setting_tab
                     SET initial_messages = ?, suggested_messages = ?, bot_name = ?, bot_avatar = ?, chat_icon = ?, placeholder = ?, model = ?, mtime = ?
                     WHERE id = ?
-                ''', (initial_messages_json, suggested_messages_json, bot_name, bot_avatar, chat_icon, placeholder, model, int(time.time()), setting_id))
+                ''', (initial_messages_json, suggested_messages_json, bot_name, bot_avatar, chat_icon, placeholder, model, timestamp, setting_id))
                 conn.commit()
             finally:
                 g_redis_lock.release_lock()
+
+        # Update bot setting in Redis
+        try:
+            key = "open_kf:bot_setting"
+            bot_setting = {
+                'id': setting_id,
+                'initial_messages': initial_messages,
+                'suggested_messages': suggested_messages,
+                'bot_name': bot_name,
+                'bot_avatar': bot_avatar,
+                'chat_icon': chat_icon,
+                'placeholder': placeholder,
+                'model': model,
+                'ctime': timestamp,
+                'mtime': timestamp
+            }
+            redis_client.set(key, json.dumps(bot_setting))
+        except Exception as e:
+            logger.error(f"update bot seeting in Redis is failed, the exception is {e}")
+            return jsonify({'retcode': -10006, 'message': f'An error occurred: {str(e)}', 'data': {}})
+
         return jsonify({'retcode': 0, 'message': 'Settings updated successfully', 'data': {}})
     except Exception as e:
-        logger.error(f"Error updating setting: {str(e)}")
+        logger.error(f"Error updating setting in DB: {str(e)}")
         return jsonify({'retcode': -10006, 'message': f'An error occurred: {str(e)}', 'data': {}})
     finally:
         if conn:

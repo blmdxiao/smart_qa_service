@@ -230,7 +230,7 @@ def init_bot_setting():
                 }
                 redis_client.set(key, json.dumps(bot_setting))
             except Exception as e:
-                print(f"[ERROR] add bot seeting into Redis is failed, the exception is {e}")
+                print(f"[ERROR] add bot setting into Redis is failed, the exception is {e}")
     except Exception as e:
         print(f"[ERROR] init_bot_setting is failed, the exception is {e}")
     finally:
