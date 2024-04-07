@@ -263,7 +263,7 @@ class AsyncCrawlerSiteContent:
         doc_id_list = list(batch.keys())
 
         # Update document status before fetching the page
-        await self.update_doc_status(doc_id_list, 2)
+        await self.update_doc_status(doc_id_list, 3)
 
         # Asynchronously fetch page content for all URLs in the batch
         headers = {
