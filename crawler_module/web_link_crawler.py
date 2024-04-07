@@ -182,8 +182,13 @@ class AsyncCrawlerSiteLink:
     async def run(self):
         begin_time = int(time.time())
         logger.info(f"[CRAWL_LINK] run begin! base_url:{self.base_url}', begin_time:{begin_time}")
-
-        async with aiohttp.ClientSession() as session:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.116 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive"
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             self.visited_urls.add(self.base_url)
             await self.crawl_link(session, self.base_url)
 
@@ -199,7 +204,6 @@ class AsyncCrawlerSiteLink:
 
         await self.mark_expired_link()
         await self.update_site_domain_status(2)
-
         end_time = int(time.time())
         timecost = end_time - begin_time
         logger.info(f"[CRAWL_LINK] run end! base_url:'{self.base_url}', end_time:{end_time}, timecost:{timecost}")

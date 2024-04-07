@@ -266,7 +266,13 @@ class AsyncCrawlerSiteContent:
         await self.update_doc_status(doc_id_list, 2)
 
         # Asynchronously fetch page content for all URLs in the batch
-        async with aiohttp.ClientSession() as session:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/52.0.2743.116 Safari/537.36",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive"
+        }
+        async with aiohttp.ClientSession(headers=headers) as session:
             task_vec = [self.crawl_content(session, doc_id, batch[doc_id], fetched_contents) for doc_id in batch]
             await asyncio.gather(*task_vec)
 
