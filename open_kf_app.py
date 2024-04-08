@@ -9,7 +9,7 @@ import time
 from urllib.parse import urljoin, urlparse
 import uuid
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from langchain.embeddings.openai import OpenAIEmbeddings
 from openai import OpenAI
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -67,6 +67,10 @@ g_document_embedder = DocumentEmbedder(
     persist_directory=CHROMA_DB_DIR
 )
 
+def get_db_connection():
+    conn = sqlite3.connect(f"{SQLITE_DB_DIR}/{SQLITE_DB_NAME}")
+    conn.row_factory = sqlite3.Row  # Set row factory to access columns by name
+    return conn
 
 def token_required(f):
     @wraps(f)
@@ -76,26 +80,37 @@ def token_required(f):
             token = request.headers['Authorization'].split(" ")[1]
         if not token:
             logger.error("Token is missing!")
-            return jsonify({'retcode': -10000, 'message': 'Token is missing!', 'data': {}})
+            return jsonify({'retcode': -10000, 'message': 'Token is missing!', 'data': {}}), 400
         try:
             user_payload = TokenHelper.verify_token(token)
             if user_payload == 'Token expired':
                 logger.error(f"Token: '{token}' is expired!")
-                return jsonify({'retcode': -10001, 'message': 'Token is expired!', 'data': {}})
+                return jsonify({'retcode': -10001, 'message': 'Token is expired!', 'data': {}}), 400
             elif user_payload == 'Invalid token':
                 logger.error(f"Token: '{token}' is invalid")
-                return jsonify({'retcode': -10001, 'message': 'Token is invalid!', 'data': {}})
+                return jsonify({'retcode': -10001, 'message': 'Token is invalid!', 'data': {}}), 400
             request.user_payload = user_payload  # Store payload in request for further use
         except Exception as e:
             logger.error(f"Token: '{token}' is invalid, the exception is {e}")
-            return jsonify({'retcode': -10001, 'message': 'Token is invalid!', 'data': {}})
+            return jsonify({'retcode': -10001, 'message': 'Token is invalid!', 'data': {}}), 400
         return f(*args, **kwargs)
     return decorated_function
 
-def get_db_connection():
-    conn = sqlite3.connect(f"{SQLITE_DB_DIR}/{SQLITE_DB_NAME}")
-    conn.row_factory = sqlite3.Row  # Set row factory to access columns by name
-    return conn
+@app.route('/open_kf_api/get_token', methods=['POST'])
+def get_token():
+    data = request.json
+    user_id = data.get('user_id')
+    if not user_id:
+        return jsonify({'retcode': -10000, 'message': 'user_id is required', 'data': {}})
+
+    try:
+        # generate token
+        token = TokenHelper.generate_token(user_id)
+        logger.success(f"generate token:'{token}' with user_id:'{user_id}'")
+        return jsonify({"retcode": 0, "message": "success", "data": {"token": token}})
+    except Exception as e:
+        logger.error(f"generate token with user_id:'{user_id}' is failed, the exception is {e}")
+        return jsonify({'retcode': -20000, 'message': str(e), 'data': {}})
 
 def get_user_query_history(user_id):
     history_key = f"open_kf:query_history:{user_id}"
@@ -103,7 +118,7 @@ def get_user_query_history(user_id):
     history = [json.loads(item) for item in history_items]
     return history
 
-def search_and_answer(query, user_id, k=RECALL_TOP_K):
+def search_and_answer(query, user_id, k=RECALL_TOP_K, is_streaming=False):
     # Perform similarity search
     beg = time.time()
     results = g_document_embedder.search_document(query, k)
@@ -178,77 +193,16 @@ def search_and_answer(query, user_id, k=RECALL_TOP_K):
     response = g_client.chat.completions.create(
         model=GPT_MODEL_NAME,
         messages=[{"role": "system", "content": prompt}],
-        temperature=0
+        temperature=0,
+        stream=is_streaming
     )
-    ret = response.choices[0].message.content
-    return ret
+    return response
 
 
-@app.route('/open_kf_api/get_token', methods=['POST'])
-def get_token():
-    data = request.json
-    user_id = data.get('user_id')
-    if not user_id:
-        return jsonify({'retcode': -10000, 'message': 'user_id is required', 'data': {}})
-
+def save_user_query_history(user_id, query, answer):
     try:
-        # generate token
-        token = TokenHelper.generate_token(user_id)
-        logger.success(f"generate token:'{token}' with user_id:'{user_id}'")
-        return jsonify({"retcode": 0, "message": "success", "data": {"token": token}})
-    except Exception as e:
-        logger.error(f"generate token with user_id:'{user_id}' is failed, the exception is {e}")
-        return jsonify({'retcode': -20000, 'message': str(e), 'data': {}})
-
-
-@app.route('/open_kf_api/smart_query', methods=['POST'])
-@token_required
-def smart_query():
-    data = request.json
-    user_id = data.get('user_id')
-    query = data.get('query')
-    if not user_id or not query:
-        logger.error(f"user_id and query are required")
-        return jsonify({'retcode': -20000, 'message': 'user_id and query are required', 'data': {}})
-    
-    token_user_id = request.user_payload['user_id']
-    if token_user_id != user_id:
-        logger.error(f"user_id:'{user_id}' does not match with token_user_id:'{token_user_id}'")
-        return jsonify({'retcode': -10001, 'message': 'Token is invalid!', 'data': {}})
-
-    try:
-        # Check if the query is in Redis
-        redis_key = f"open_kf:intervene:{query}"
-        intervene_data = redis_client.get(redis_key)
-        if intervene_data:
-            # If found in Redis, parse the JSON data and return it
-            intervene_data = json.loads(intervene_data)
-            logger.info(f"user_id:'{user_id}', query:'{query}' is hit in Redis, the intervene_data is {intervene_data}")
-            return jsonify({"retcode": 0, "message": "success", "data": intervene_data})
-    except Exception as e:
-        logger.error(f"Redis exception {e} for user_id:'{user_id}' and query:'{query}'")
-        # Just ignore Redis error
-        #return jsonify({'retcode': -40000, 'message': f'Redis exception {e}', 'data': {}})
-
-    if len(query) > MAX_QUERY_SIZE:
-        query = query[:MAX_QUERY_SIZE]
-
-    #last_character = query[-1]
-    #if last_character != "？" and last_character != "?":
-    #    query += "?"
-
-    try:
-        beg = time.time()
-        answer = search_and_answer(query, user_id)
-        timecost = time.time() - beg
         answer_json = json.loads(answer)
-        answer_json["source"] = list(dict.fromkeys(answer_json["source"]))
-        logger.success(f"query:'{query}' and user_id:'{user_id}' is processed successfully, the answer is {answer}\nthe total timecost is {timecost}\n")
-    except Exception as e:
-        logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed, the exception is {e}")
-        return jsonify({'retcode': -20000, 'message': str(e), 'data': {}})
 
-    try:
         # After generating the response from GPT
         # Store user query and GPT response in Redis
         history_key = f"open_kf:query_history:{user_id}"
@@ -259,8 +213,6 @@ def smart_query():
         redis_client.expire(history_key, HISTORY_EXPIRE_TIME)
     except Exception as e:
         logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed with Redis, the exception is {e}")
-        # just ignore Redis error
-        #return jsonify({'retcode': -30000, 'message': str(e), 'data': {}})
 
     timestamp = int(time.time())
     conn = None
@@ -276,13 +228,118 @@ def smart_query():
                 g_redis_lock.release_lock()
     except Exception as e:
         logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed with Database, the exception is {e}")
-        # just ignore DB error
-        #return jsonify({'retcode': -30000, 'message': str(e), 'data': {}})
     finally:
         if conn:
             conn.close()
 
-    return jsonify({"retcode": 0, "message": "success", "data": answer_json})
+def check_smart_query(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        data = request.json
+        user_id = data.get('user_id')
+        query = data.get('query')
+        if not user_id or not query:
+            logger.error(f"user_id and query are required")
+            return jsonify({'retcode': -20000, 'message': 'user_id and query are required', 'data': {}}), 400
+        
+        request.user_id = user_id
+        request.query = query
+        request.intervene_data = None
+
+        try:
+            # Check if the query is in Redis
+            redis_key = f"open_kf:intervene:{query}"
+            intervene_data = redis_client.get(redis_key)
+            if intervene_data:
+                logger.info(f"user_id:'{user_id}', query:'{query}' is hit in Redis, the intervene_data is {intervene_data}")
+                request.intervene_data = intervene_data
+        except Exception as e:
+            logger.error(f"Redis exception {e} for user_id:'{user_id}' and query:'{query}'")
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/open_kf_api/smart_query', methods=['POST'])
+@check_smart_query
+@token_required
+def smart_query():
+    try:
+        user_id = request.user_id
+        query = request.query
+        intervene_data = request.intervene_data
+        if intervene_data:
+            save_user_query_history(user_id, query, intervene_data)
+            intervene_data_json = json.loads(intervene_data)
+            return jsonify({"retcode": 0, "message": "success", "data": intervene_data_json})
+
+        if len(query) > MAX_QUERY_SIZE:
+            query = query[:MAX_QUERY_SIZE]
+
+        #last_character = query[-1]
+        #if last_character != "？" and last_character != "?":
+        #    query += "?"
+
+        beg = time.time()
+        response = search_and_answer(query, user_id)
+        answer = response.choices[0].message.content
+
+        timecost = time.time() - beg
+        answer_json = json.loads(answer)
+        answer_json["source"] = list(dict.fromkeys(answer_json["source"]))
+        logger.success(f"query:'{query}' and user_id:'{user_id}' is processed successfully, the answer is {answer}\nthe total timecost is {timecost}\n")
+        save_user_query_history(user_id, query, answer)
+        return jsonify({"retcode": 0, "message": "success", "data": answer_json})
+    except Exception as e:
+        logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed, the exception is {e}")
+        return jsonify({'retcode': -20000, 'message': str(e), 'data': {}}), 500
+
+
+@app.route('/open_kf_api/smart_query_stream', methods=['POST'])
+@check_smart_query
+@token_required
+def smart_query_stream():
+    headers = {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no'
+    }
+
+    try:
+        user_id = request.user_id
+        query = request.query
+        intervene_data = request.intervene_data
+        if intervene_data:
+            save_user_query_history(user_id, query, intervene_data)
+
+            def generate_intervene():
+                yield intervene_data
+            return Response(generate_intervene(), mimetype="text/event-stream", headers=headers)
+
+        if len(query) > MAX_QUERY_SIZE:
+            query = query[:MAX_QUERY_SIZE]
+
+        #last_character = query[-1]
+        #if last_character != "？" and last_character != "?":
+        #    query += "?"
+
+        beg = time.time()
+        def generate_llm():
+            answer_chunks = []
+            response = search_and_answer(query, user_id, is_streaming=True)
+            for chunk in response:
+                content = chunk.choices[0].delta.content
+                if content:
+                    answer_chunks.append(content)
+                    # Send each answer segment
+                    yield content
+            # After the streaming response is complete, save to Redis and SQLite
+            answer = ''.join(answer_chunks)
+            timecost = time.time() - beg
+            logger.success(f"query:'{query}' and user_id:'{user_id}' is processed successfully, the answer is {answer}\nthe total timecost is {timecost}\n")
+            save_user_query_history(user_id, query, answer)
+        return Response(generate_llm(), mimetype="text/event-stream", headers=headers)
+    except Exception as e:
+        logger.error(f"query:'{query}' and user_id:'{user_id}' is processed failed, the exception is {e}")
+        return jsonify({'retcode': -20000, 'message': str(e), 'data': {}}), 500
 
 
 @app.route('/open_kf_api/get_user_conversation_list', methods=['POST'])
