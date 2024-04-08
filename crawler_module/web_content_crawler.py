@@ -12,9 +12,9 @@ from utils.logger_config import my_logger as logger
 
 class AsyncCrawlerSiteContent:
 
-    def __init__(self, domain, sqlite_db_path, max_requests, max_embedding_input, document_embedder_obj, redis_lock):
-        logger.info(f"[CRAWL_CONTENT] init, domain:'{domain}'")
-        self.domain = domain
+    def __init__(self, domain_list, sqlite_db_path, max_requests, max_embedding_input, document_embedder_obj, redis_lock):
+        logger.info(f"[CRAWL_CONTENT] init, domain_list:{domain_list}")
+        self.domain_list = domain_list
         self.sqlite_db_path = sqlite_db_path
         self.semaphore = asyncio.Semaphore(max_requests)
         self.max_embedding_input = max_embedding_input
@@ -263,7 +263,7 @@ class AsyncCrawlerSiteContent:
         doc_id_list = list(batch.keys())
 
         # Update document status before fetching the page
-        await self.update_doc_status(doc_id_list, 3)
+        await self.update_doc_status(doc_id_list, 2)
 
         # Asynchronously fetch page content for all URLs in the batch
         headers = {
@@ -354,23 +354,24 @@ class AsyncCrawlerSiteContent:
             # Enable WAL mode for better concurrency
             await db.execute("PRAGMA journal_mode=WAL;")
 
-            # Step 1: Check current domain_status for the domain
-            cursor = await db.execute("SELECT domain_status FROM t_domain_tab WHERE domain = ?", (self.domain,))
-            row = await cursor.fetchone()
-            if row and row[0] != 4:
-                # Step 2: Check if all URLs for the domain have doc_status >= 4
-                cursor = await db.execute(
-                    "SELECT COUNT(*) FROM t_raw_tab WHERE domain = ? AND doc_status < 4", (self.domain,))
-                count_row = await cursor.fetchone()
-                if count_row[0] == 0:  # If no records have doc_status < 4
-                    timestamp = int(time.time())
-                    if await self.redis_lock.aacquire_lock():
-                        try:
-                            # Step 3: Update domain_status to 4 in t_domain_tab
-                            await db.execute(
-                                "UPDATE t_domain_tab SET domain_status = ?, mtime = ? WHERE domain = ?", (4, timestamp, self.domain))
-                            await db.commit()
-                        finally:
-                            await self.redis_lock.arelease_lock()
-                    logger.info(f"[CRAWL_CONTENT] check_and_update_domain_status, Domain status updated to 4 for domain: {self.domain}")
+            timestamp = int(time.time())
+            for domain in self.domain_list:
+                # Step 1: Check current domain_status for the domain
+                cursor = await db.execute("SELECT domain_status FROM t_domain_tab WHERE domain = ?", (domain,))
+                row = await cursor.fetchone()
+                if row and row[0] != 4:
+                    # Step 2: Check if all URLs for the domain have doc_status >= 4
+                    cursor = await db.execute(
+                        "SELECT COUNT(*) FROM t_raw_tab WHERE domain = ? AND doc_status < 4", (domain,))
+                    count_row = await cursor.fetchone()
+                    if count_row[0] == 0:  # If no records have doc_status < 4
+                        if await self.redis_lock.aacquire_lock():
+                            try:
+                                # Step 3: Update domain_status to 4 in t_domain_tab
+                                await db.execute(
+                                    "UPDATE t_domain_tab SET domain_status = ?, mtime = ? WHERE domain = ?", (4, timestamp, domain))
+                                await db.commit()
+                            finally:
+                                await self.redis_lock.arelease_lock()
+                        logger.info(f"[CRAWL_CONTENT] check_and_update_domain_status, Domain status updated to 4 for domain:'{domain}'")
 

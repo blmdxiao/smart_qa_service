@@ -1028,7 +1028,7 @@ def get_crawl_url_list():
             conn.close()
 
 
-def async_crawl_content_task(domain, url_dict, task_type):
+def async_crawl_content_task(domain_list, url_dict, task_type):
     """
     Starts the asynchronous crawl and embedding process for a list of document IDs.
 
@@ -1039,9 +1039,9 @@ def async_crawl_content_task(domain, url_dict, task_type):
     """
 
     """Start the crawl content task in an asyncio event loop."""
-    logger.info(f"async_crawl_content_task begin! domain:'{domain}', url_dict:{url_dict}, task_type:{task_type}")
+    logger.info(f"async_crawl_content_task begin! domain_lsit:{domain_list}, url_dict:{url_dict}, task_type:{task_type}")
     crawler_content = AsyncCrawlerSiteContent(
-        domain=domain,
+        domain_list=domain_list,
         sqlite_db_path=f"{SQLITE_DB_DIR}/{SQLITE_DB_NAME}",
         max_requests=MAX_CRAWL_PARALLEL_REQUEST,
         max_embedding_input=MAX_EMBEDDING_INPUT,
@@ -1056,7 +1056,7 @@ def async_crawl_content_task(domain, url_dict, task_type):
         asyncio.run(crawler_content.delete_content(url_dict))
     elif task_type == 3:
         asyncio.run(crawler_content.update_content(url_dict))
-    logger.info(f"async_crawl_content_task end!, domain:'{domain}', task_type:{task_type}")
+    logger.info(f"async_crawl_content_task end!, domain_list:{domain_list}', task_type:{task_type}")
 
 def check_crawl_content_task(f):
     @wraps(f)
@@ -1074,32 +1074,34 @@ def check_crawl_content_task(f):
             cur.execute("PRAGMA journal_mode=WAL;")
 
             placeholders = ', '.join(['?'] * len(id_list))
-            cur.execute(f"SELECT id, url FROM t_raw_tab WHERE id IN ({placeholders})", id_list)
+            cur.execute(f"SELECT id, domain, url FROM t_raw_tab WHERE id IN ({placeholders})", id_list)
             rows = cur.fetchall()
 
             if len(rows) != len(id_list):
                 missing_ids = set(id_list) - set(row[0] for row in rows)
                 return jsonify({'retcode': -10009, 'message': f'The following ids do not exist: {missing_ids}', 'data': {}})
 
-            domain = urlparse(rows[0]["url"]).netloc
-            logger.info(f"domain is '{domain}'")
             url_dict = {row["id"]: row["url"] for row in rows}
+            domain_list = list(set(row["domain"] for row in rows))
+            logger.info(f"domain_list is {domain_list}")
 
             # Store domain and url_dict in request for further use
-            request.domain = domain
+            request.domain_list = domain_list
             request.url_dict = url_dict
 
-            # Check and update domain_status in t_domain_tab
-            cur.execute("SELECT domain_status FROM t_domain_tab WHERE domain = ?", (domain,))
-            domain_info = cur.fetchone()
-            if domain_info and domain_info["domain_status"] < 3:
-                if g_redis_lock.acquire_lock():
-                    try:
-                        cur.execute("UPDATE t_domain_tab SET domain_status = 3, mtime = ? WHERE domain = ?", (int(time.time()), domain))
-                        conn.commit()
-                        logger.info(f"Updated domain_status to 3 for domain: '{domain}'")
-                    finally:
-                        g_redis_lock.release_lock()
+            # Check and update domain_status in t_domain_tab for all domains in domain_list
+            timestamp = int(time.time())
+            for domain in domain_list:
+                cur.execute("SELECT domain_status FROM t_domain_tab WHERE domain = ?", (domain,))
+                domain_info = cur.fetchone()
+                if domain_info and domain_info["domain_status"] < 3:
+                    if g_redis_lock.acquire_lock():
+                        try:
+                            cur.execute("UPDATE t_domain_tab SET domain_status = 3, mtime = ? WHERE domain = ?", (timestamp, domain))
+                            conn.commit()
+                            logger.info(f"Updated domain_status to 3 for domain: '{domain}'")
+                        finally:
+                            g_redis_lock.release_lock()
         except Exception as e:
             return jsonify({'retcode': -10010, 'message': f'An error occurred: {str(e)}', 'data': {}})
         finally:
@@ -1110,35 +1112,35 @@ def check_crawl_content_task(f):
 
 
 @app.route('/open_kf_api/add_crawl_url_list', methods=['POST'])
-@token_required
 @check_crawl_content_task
+@token_required
 def add_crawl_url_list():
-    domain = request.domain
+    domain_list = request.domain_list
     url_dict = request.url_dict
     # Use threading to avoid blocking the Flask application
-    Thread(target=async_crawl_content_task, args=(domain, url_dict, 1)).start()
+    Thread(target=async_crawl_content_task, args=(domain_list, url_dict, 1)).start()
     return jsonify({'retcode': 0, 'message': 'Started processing the URL list.', 'data': {}})
 
 
 @app.route('/open_kf_api/delete_crawl_url_list', methods=['POST'])
-@token_required
 @check_crawl_content_task
+@token_required
 def delete_crawl_url_list():
-    domain = request.domain
+    domain_list = request.domain_list
     url_dict = request.url_dict
     # Use threading to avoid blocking the Flask application
-    Thread(target=async_crawl_content_task, args=(domain, url_dict, 2)).start()
+    Thread(target=async_crawl_content_task, args=(domain_list, url_dict, 2)).start()
     return jsonify({'retcode': 0, 'message': 'Started deleting the URL list embeddings.'})
 
 
 @app.route('/open_kf_api/update_crawl_url_list', methods=['POST'])
-@token_required
 @check_crawl_content_task
+@token_required
 def update_crawl_url_list():
-    domain = request.domain
+    domain_list = request.domain_list
     url_dict = request.url_dict
     # Use threading to avoid blocking the Flask application
-    Thread(target=async_crawl_content_task, args=(domain, url_dict, 3)).start()
+    Thread(target=async_crawl_content_task, args=(domain_list, url_dict, 3)).start()
     return jsonify({'retcode': 0, 'message': 'Started updating the URL list embeddings.'})
 
 
