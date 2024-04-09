@@ -126,7 +126,11 @@ def search_and_answer(query, user_id, k=RECALL_TOP_K, is_streaming=False):
     #logger.info(f"for the query:'{query}' and user_id:'{user_id}, the top {k} results are: {results}\nthe timecost of similarity_search_with_score is {timecost1}\n")
 
     # Build the prompt for GPT
-    context = "\n--------------------\n".join([f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
+    #context = "\n--------------------\n".join([f"Document URL: {result[0].metadata['source']}\nContent: {result[0].page_content}" for result in results])
+    context = "\n--------------------\n".join([
+        f"Document URL: {doc.metadata['source']}\nContent: {doc.page_content}"
+        for doc, score in results if score > 0
+    ])
 
     # Get user history from Redis
     user_history = get_user_query_history(user_id)
@@ -136,11 +140,11 @@ def search_and_answer(query, user_id, k=RECALL_TOP_K, is_streaming=False):
 
     site_title = SITE_TITLE
     prompt = f"""
-    This is a smart customer service bot designed to assist users by providing information based on the content of the '{site_title}' website and its documentation. The system uses a combination of Language Model Generative Pre-trained Transformer (GPT) and Retriever-Augmented Generation (RAG) with Chroma as the vector database to find the most relevant documents in response to user queries.
+    This is a smart customer service bot designed to assist users by providing information based on the content of the '{site_title}' website and its documentation. The system uses a combination of Large Language Model (LLM) and Retriever-Augmented Generation (RAG) with Chroma as the vector database to find the most relevant documents in response to user queries.
 
     Given the user's previous interactions as described above, consider how their past queries might inform their current needs. This historical context can help tailor the response to be more aligned with their likely interests or unresolved questions from previous interactions.
 
-    When a query is received, it first performs a similarity search to recall the top {k} documents from Chroma. These documents then serve as the context for generating an answer. The aim is to provide users with precise information related to the '{site_title}' website, enhancing their understanding and usage of the site.
+    When a query is received, the system first performs a similarity search to recall the top {k} documents from Chroma with relevance scores greater than 0 as candidates. If all recalled documents have relevance scores less than or equal to 0, no documents will be recalled. These documents then serve as the context for generating an answer. The aim is to provide users with precise information related to the '{site_title}' website, enhancing their understanding and usage of the site.
 
     For general greetings or queries not directly related to the website's content (e.g., "hello", "who are you"), the system should provide a friendly response and guide the user towards making inquiries related to the services or information available on the '{site_title}' website.
 
@@ -326,6 +330,7 @@ def smart_query_stream():
             answer_chunks = []
             response = search_and_answer(query, user_id, is_streaming=True)
             for chunk in response:
+                logger.info(f"chunk:{chunk}")
                 content = chunk.choices[0].delta.content
                 if content:
                     answer_chunks.append(content)
